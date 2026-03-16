@@ -11,6 +11,15 @@ Design constraints (from spec):
   - Special tokens: <bos>, <eos>, <pad>, <think>, </think>
   - Number splits:  Never merge across decimal points or commas in numbers.
 
+Why individual digit tokenization is critical for arithmetic:
+  Without digit isolation, BPE learns multi-digit tokens like "142", "358", "500".
+  When the model is asked "142 + 358", it sees three opaque tokens rather than
+  six individual digit tokens. Carrying, column addition, and multi-step arithmetic
+  all require reasoning about each digit's place value independently.
+  With individual_digits=True, "142" → ["1", "4", "2"] — the model can apply
+  learned positional arithmetic procedures digit-by-digit, just as humans do.
+  This is a deliberate architectural choice, not a minor tuning detail.
+
 Usage:
   # Train on a small sample (testing / validation):
   python train_tokenizer.py --mode sample --output ./tokenizer_output
@@ -43,36 +52,45 @@ from tokenizers.pre_tokenizers import (
 from tokenizers.processors import TemplateProcessing
 from tokenizers.trainers import BpeTrainer
 
-
 # ---------------------------------------------------------------------------
 # Constants
 # ---------------------------------------------------------------------------
 
-VOCAB_SIZE      = 32768          # Tile-aligned (÷128 = 256)
-MIN_FREQUENCY   = 2              # Minimum token frequency to include in vocab
-INITIAL_ALPHABET_SIZE = 256      # Byte-level fallback covers all Unicode
+VOCAB_SIZE = (
+    32768  # Tile-aligned (÷128 = 256); every embedding matrix row count is a multiple of 128
+)
+MIN_FREQUENCY = 2  # Minimum token frequency to include in vocab; prunes hapax tokens that are noise
+INITIAL_ALPHABET_SIZE = 256  # Byte-level fallback covers all Unicode (256 possible byte values)
 
+# Special tokens are declared in priority order.
+# The ORDER here is not arbitrary — they are added to the vocabulary FIRST,
+# which guarantees that <pad>=0, <bos>=1, <eos>=2, etc. are stable across
+# runs and corpus sizes. If special tokens were added after BPE merges, their
+# IDs would shift depending on how many merge rules fired, making checkpoints
+# incompatible with each other.
 SPECIAL_TOKENS = [
-    "<pad>",      # Padding — ID 0 (first, so padding_idx=0 works everywhere)
-    "<bos>",      # Beginning of sequence
-    "<eos>",      # End of sequence
-    "<unk>",      # Unknown (byte fallback means this should never fire)
-    "<think>",    # Begin chain-of-thought block
-    "</think>",   # End chain-of-thought block
+    "<pad>",  # Padding — ID 0 (first, so padding_idx=0 works everywhere)
+    "<bos>",  # Beginning of sequence — wraps every encoded text on the left
+    "<eos>",  # End of sequence — wraps every encoded text on the right
+    "<unk>",  # Unknown (byte fallback means this should never fire in practice)
+    "<think>",  # Begin chain-of-thought block (GRPO format)
+    "</think>",  # End chain-of-thought block (GRPO format)
 ]
 
 # Token IDs (post-training these will be confirmed by verify())
-PAD_TOKEN_ID    = 0
-BOS_TOKEN_ID    = 1
-EOS_TOKEN_ID    = 2
-UNK_TOKEN_ID    = 3
-THINK_START_ID  = 4
-THINK_END_ID    = 5
+# These constants mirror the SPECIAL_TOKENS list order above.
+PAD_TOKEN_ID = 0
+BOS_TOKEN_ID = 1
+EOS_TOKEN_ID = 2
+UNK_TOKEN_ID = 3
+THINK_START_ID = 4
+THINK_END_ID = 5
 
 
 # ---------------------------------------------------------------------------
 # Pre-tokenizer: the digit policy lives here
 # ---------------------------------------------------------------------------
+
 
 def build_pre_tokenizer():
     """
@@ -86,40 +104,65 @@ def build_pre_tokenizer():
       3. ByteLevel: convert each pre-token to byte representation for fallback.
          This ensures no <unk> tokens — every Unicode character has a byte encoding.
 
-    The Digits pre-tokenizer with individual_digits=True is the key mechanism.
-    It splits on digit/non-digit boundaries AND between every digit.
+    Why individual_digits=True is the key mechanism:
+      The Digits pre-tokenizer, when individual_digits=True, splits on EVERY
+      digit boundary — not just digit/non-digit transitions but between consecutive
+      digits too. Without this flag, "142" stays as a single pre-token, allowing
+      BPE to learn a "142" merge. With this flag, "1", "4", "2" are hard splits
+      that BPE cannot undo.
+
+    Why ByteLevel guarantees no <unk>:
+      ByteLevel re-encodes each pre-token character-by-character into printable
+      ASCII surrogates for all 256 possible byte values (Ġ, Ā, ā, ...). Because
+      every byte value has a dedicated symbol, and any Unicode string can be
+      decomposed into bytes, no input can produce an unrepresentable sequence.
+      The <unk> token defined in the vocabulary will never appear in practice.
+
     "3.14" → ["3", ".", "1", "4"] — decimal point also split (punctuation boundary)
     "1,000" → ["1", ",", "0", "0", "0"] — comma also split
     """
-    return PreSequence([
-        # Split numbers: each digit becomes its own pre-token
-        # individual_digits=True is the critical flag
-        Digits(individual_digits=True),
-        # Byte-level encoding for full Unicode coverage
-        ByteLevel(add_prefix_space=False, use_regex=True),
-    ])
+    return PreSequence(
+        [
+            # Digits(individual_digits=True): each digit becomes its own pre-token.
+            # This is the critical flag for arithmetic reasoning — see module docstring.
+            # Without individual_digits=True, multi-digit numbers stay as single pre-tokens
+            # and BPE learns opaque tokens like "142", destroying digit-level reasoning.
+            Digits(individual_digits=True),
+            # ByteLevel: re-encode each pre-token using 256-symbol byte alphabet.
+            # add_prefix_space=False: do not insert Ġ before word-initial tokens;
+            # use_regex=True: apply GPT-2-style whitespace-preserving regex split first.
+            # This guarantees full Unicode coverage with zero unknown tokens.
+            ByteLevel(add_prefix_space=False, use_regex=True),
+        ]
+    )
 
 
 # ---------------------------------------------------------------------------
 # Training
 # ---------------------------------------------------------------------------
 
+
 def build_trainer() -> BpeTrainer:
     """
     Configure the BPE trainer.
 
     Key parameters:
-    - vocab_size: 32768 (tile-aligned)
-    - min_frequency: 2 (prune tokens that appear only once — noise)
-    - special_tokens: must be first in vocab so IDs are deterministic
-    - initial_alphabet: ByteLevel.alphabet() — all 256 bytes as base tokens
-      This is the byte fallback mechanism. Any byte sequence is representable.
+    - vocab_size: 32768 (tile-aligned; must be divisible by 128 for Trainium2 NeuronCore)
+    - min_frequency: 2 (prune tokens that appear only once — noise reduction)
+    - special_tokens: must be first in vocab so IDs are deterministic across corpora.
+      If omitted or listed after regular tokens, IDs depend on corpus frequencies
+      and change between training runs, breaking checkpoint compatibility.
+    - initial_alphabet: ByteLevel.alphabet() — all 256 bytes as base tokens.
+      This seeds the vocabulary with all possible byte values BEFORE any BPE
+      merges happen, ensuring the byte fallback is always available. Without this,
+      rare Unicode bytes might not appear in the training corpus and would be absent
+      from the vocabulary, causing <unk> emissions.
     """
     return BpeTrainer(
         vocab_size=VOCAB_SIZE,
         min_frequency=MIN_FREQUENCY,
-        special_tokens=SPECIAL_TOKENS,
-        initial_alphabet=ByteLevel.alphabet(),
+        special_tokens=SPECIAL_TOKENS,  # added first → deterministic IDs (see SPECIAL_TOKENS note)
+        initial_alphabet=ByteLevel.alphabet(),  # all 256 bytes → no <unk> possible
         show_progress=True,
     )
 
@@ -138,7 +181,6 @@ def get_sample_corpus() -> list[str]:
         "The quick brown fox jumps over the lazy dog.",
         "Machine learning models learn from data to make predictions.",
         "Attention mechanisms allow models to focus on relevant parts of the input.",
-
         # Math — the critical test domain
         "What is 142 + 358? Let me think step by step.",
         "3.14159 is approximately equal to pi.",
@@ -149,16 +191,13 @@ def get_sample_corpus() -> list[str]:
         "Compute 99 × 99 = 9801. Check: (100-1)² = 10000 - 200 + 1 = 9801.",
         "The 17th prime number is 59.",
         "2 + 2 = 4, 3 + 3 = 6, 100 + 100 = 200.",
-
         # Chain-of-thought format — the <think> tokens must be stable
         "<think>\nLet me work through this step by step.\n1. First, identify the problem.\n2. Then, apply the formula.\n3. Finally, verify the answer.\n</think>\nThe answer is 42.",
         "User: What is 15 factorial?\nAssistant: <think>\n15! = 15 × 14 × 13 × ... × 1\n= 1307674368000\n</think>\n1,307,674,368,000",
-
         # Code — important for Phase 2 GRPO
         "def fibonacci(n: int) -> int:\n    if n <= 1:\n        return n\n    return fibonacci(n-1) + fibonacci(n-2)",
         "for i in range(0, 100, 2):\n    print(f'{i}: {i**2}')",
         "x = [1, 2, 3, 4, 5]\nresult = sum(x[i]*x[i] for i in range(len(x)))",
-
         # Digit edge cases
         "The year 2026 is 2026 years after 0 AD.",
         "Room 42, Floor 7, Building 3A.",
@@ -166,7 +205,6 @@ def get_sample_corpus() -> list[str]:
         "SHA256: a3f5b2c1d4e6... (truncated)",
         "Temperature: -273.15°C is absolute zero.",
         "Price: $1,299.99 after 15% discount from $1,529.41",
-
         # Repeated patterns (BPE learns from frequency)
         " ".join(["the"] * 50),
         " ".join(["and"] * 50),
@@ -179,12 +217,14 @@ def train_on_sample(output_dir: str) -> Tokenizer:
     print("Training on sample corpus...")
     tokenizer = Tokenizer(BPE(unk_token="<unk>"))
     tokenizer.pre_tokenizer = build_pre_tokenizer()
-    tokenizer.decoder = decoders.ByteLevel()
+    tokenizer.decoder = (
+        decoders.ByteLevel()
+    )  # mirrors ByteLevel pre-tokenizer; needed to reconstruct text
 
     trainer = build_trainer()
     corpus = get_sample_corpus()
 
-    # tokenizers library accepts an iterator of strings
+    # tokenizers library accepts an iterator of strings; processes lazily if given a generator
     tokenizer.train_from_iterator(corpus, trainer=trainer)
     _add_post_processor(tokenizer)
 
@@ -201,15 +241,17 @@ def train_on_corpus(data_path: str, output_dir: str) -> Tokenizer:
     print(f"Training on corpus: {data_path}")
     tokenizer = Tokenizer(BPE(unk_token="<unk>"))
     tokenizer.pre_tokenizer = build_pre_tokenizer()
-    tokenizer.decoder = decoders.ByteLevel()
+    tokenizer.decoder = decoders.ByteLevel()  # must match the ByteLevel pre-tokenizer above
 
     trainer = build_trainer()
 
     def file_iterator(path: str) -> Iterator[str]:
+        # Generator: yields one stripped line at a time, skipping blank lines.
+        # Memory usage is O(1) in corpus size — only one line live at a time.
         with open(path, "r", encoding="utf-8", errors="replace") as f:
             for line in f:
                 line = line.strip()
-                if line:
+                if line:  # skip blank lines; they contribute nothing to BPE merge learning
                     yield line
 
     tokenizer.train_from_iterator(file_iterator(data_path), trainer=trainer)
@@ -223,13 +265,28 @@ def _add_post_processor(tokenizer: Tokenizer):
     """
     Add BOS/EOS wrapping as a post-processor.
     Every sequence is automatically wrapped: <bos> ... <eos>
-    This happens transparently at encode time.
+    This happens transparently at encode time — callers never need to prepend/append manually.
+
+    The TemplateProcessing syntax:
+      "$A" is a placeholder for the first (or only) input sequence.
+      "$B" is a placeholder for the second sequence in a pair (e.g. NLI premise/hypothesis).
+      ":1" suffix on $B:1 assigns segment ID 1 to all tokens of the second sequence
+      (segment ID 0 is implicit for $A tokens). This mirrors BERT's segment embeddings.
+
+      "single" template covers single-sequence inputs (our primary use case):
+        <bos> [all tokens of input A] <eos>
+
+      "pair" template covers two-sequence inputs (not currently used, but defined for completeness):
+        <bos> [sequence A] <eos> [sequence B] <eos>
+
+    The special_tokens list maps each template literal to its vocabulary ID so the
+    post-processor can inject actual token IDs rather than string names.
     """
     tokenizer.post_processor = TemplateProcessing(
-        single="<bos> $A <eos>",
-        pair="<bos> $A <eos> $B:1 <eos>:1",
+        single="<bos> $A <eos>",  # $A expands to all token IDs of the encoded input
+        pair="<bos> $A <eos> $B:1 <eos>:1",  # $B:1 = sequence B with segment_id=1
         special_tokens=[
-            ("<bos>", tokenizer.token_to_id("<bos>")),
+            ("<bos>", tokenizer.token_to_id("<bos>")),  # resolve string → integer ID
             ("<eos>", tokenizer.token_to_id("<eos>")),
         ],
     )
@@ -238,6 +295,7 @@ def _add_post_processor(tokenizer: Tokenizer):
 # ---------------------------------------------------------------------------
 # Save / Load
 # ---------------------------------------------------------------------------
+
 
 def save_tokenizer(tokenizer: Tokenizer, output_dir: str):
     """Save tokenizer + metadata config."""
@@ -249,12 +307,12 @@ def save_tokenizer(tokenizer: Tokenizer, output_dir: str):
     tokenizer.save(str(tokenizer_path))
     print(f"Saved tokenizer → {tokenizer_path}")
 
-    # Save a human-readable config alongside
+    # Save a human-readable config alongside — useful for auditing and loading into HF AutoTokenizer
     vocab_size = tokenizer.get_vocab_size()
     config = {
         "model_type": "bpe",
         "vocab_size": vocab_size,
-        "tile_aligned": vocab_size % 128 == 0,
+        "tile_aligned": vocab_size % 128 == 0,  # must be True for Trainium2 tile efficiency
         "tile_factor": vocab_size // 128,
         "special_tokens": {t: tokenizer.token_to_id(t) for t in SPECIAL_TOKENS},
         "digit_policy": "individual_digits=True — each digit is a separate pre-token",
@@ -283,22 +341,28 @@ def load_tokenizer(tokenizer_dir: str) -> Tokenizer:
 # Verification suite
 # ---------------------------------------------------------------------------
 
+
 def verify(tokenizer: Tokenizer, sample_mode: bool = False):
     """
     Run the verification suite. All checks must pass before training.
 
     This is not optional. A tokenizer that fails any of these checks
-    will silently degrade reasoning capability.
+    will silently degrade reasoning capability:
+      - Wrong vocab size → embedding matrix not tile-aligned → Trainium2 padding overhead
+      - Wrong special token IDs → model writes to wrong embedding rows → garbage output
+      - Digit merges present → arithmetic reasoning capability destroyed
+      - Round-trip failure → model learns to decode text incorrectly
+      - <unk> emissions → byte fallback broken → coverage holes in vocabulary
 
     sample_mode: if True, relax vocab size and compression checks
                  (sample corpus is too small to fill 32768 vocab slots).
                  These checks are always enforced on a production tokenizer.
     """
-    print("\n" + "="*60)
+    print("\n" + "=" * 60)
     print("TOKENIZER VERIFICATION SUITE")
     if sample_mode:
         print("(sample mode: vocab size / compression checks informational only)")
-    print("="*60)
+    print("=" * 60)
 
     passed = 0
     failed = 0
@@ -320,6 +384,10 @@ def verify(tokenizer: Tokenizer, sample_mode: bool = False):
             print(f"         {detail}")
 
     # --- 1. Vocab size ---
+    # Hard requirement: vocab_size must be 32768 and divisible by 128.
+    # The model's embedding and LM-head weight matrices are (vocab_size, d_model).
+    # On Trainium2, matrix dimensions must be multiples of 128 for full tile utilization.
+    # A non-aligned vocab size forces the NeuronCore to pad, wasting SBUF bandwidth.
     vocab_size = tokenizer.get_vocab_size()
     # In sample mode these are warnings — corpus too small to reach 32768 merges.
     # In production these are hard failures.
@@ -337,30 +405,36 @@ def verify(tokenizer: Tokenizer, sample_mode: bool = False):
     )
 
     # --- 2. Special token IDs ---
+    # Hard requirement: every special token must resolve to a known, stable ID.
+    # The model's forward pass uses these IDs directly (e.g., loss masking on PAD_TOKEN_ID=0).
+    # An absent or wrongly-IDed special token causes silent training bugs.
     for token in SPECIAL_TOKENS:
         tid = tokenizer.token_to_id(token)
-        check(
-            f"Special token '{token}' exists",
-            tid is not None,
-            f"ID = {tid}"
-        )
+        check(f"Special token '{token}' exists", tid is not None, f"ID = {tid}")
 
+    # <pad> must be ID 0 specifically — most frameworks use padding_idx=0 by default,
+    # and the loss function masks out pad positions by checking id == 0.
     check(
         "<pad> has ID 0",
         tokenizer.token_to_id("<pad>") == 0,
-        f"got ID {tokenizer.token_to_id('<pad>')}"
+        f"got ID {tokenizer.token_to_id('<pad>')}",
     )
 
     # --- 3. Digit isolation — the critical policy check ---
+    # Hard requirement: no single token may contain more than one digit character.
+    # If this fires, the digit isolation pre-tokenizer has been misconfigured
+    # (e.g., individual_digits=False) or a later BPE merge has recombined digits.
+    # BPE cannot merge across pre-token boundaries, so if digits are proper pre-tokens
+    # this check should always pass.
     print("\n  [Digit isolation policy]")
 
     test_cases = [
-        ("142",       True,  "3-digit integer"),
-        ("3.14",      True,  "decimal number"),
-        ("1,000",     True,  "comma-separated number"),
-        ("99",        True,  "2-digit integer"),
-        ("2026",      True,  "year"),
-        ("0.0001234", True,  "small decimal"),
+        ("142", True, "3-digit integer"),
+        ("3.14", True, "decimal number"),
+        ("1,000", True, "comma-separated number"),
+        ("99", True, "2-digit integer"),
+        ("2026", True, "year"),
+        ("0.0001234", True, "small decimal"),
     ]
 
     for text, expect_split, label in test_cases:
@@ -368,8 +442,10 @@ def verify(tokenizer: Tokenizer, sample_mode: bool = False):
         enc = tokenizer.encode(text)
         tokens = enc.tokens
 
-        # Remove byte-level prefix artifacts for digit counting
-        # ByteLevel adds 'Ġ' prefix to first token; strip for comparison
+        # Remove byte-level prefix artifacts for digit counting.
+        # ByteLevel.encode() prepends 'Ġ' (U+0120) to tokens that follow whitespace
+        # and '▁' (U+2581) in some configurations. Strip both so digit counting works
+        # on the underlying character content.
         clean_tokens = [t.replace("Ġ", "").replace("▁", "") for t in tokens]
 
         # Check: every character of a digit sequence should be its own token
@@ -381,7 +457,9 @@ def verify(tokenizer: Tokenizer, sample_mode: bool = False):
                 if c.isdigit():
                     digits_in_tokens.append(c)
 
-        # Each digit should appear exactly once and not be merged with neighbors
+        # Each digit should appear exactly once and not be merged with neighbors.
+        # Walk through source digit positions and find which clean token contains each.
+        # If any token contains more than one digit, isolation has failed.
         all_isolated = True
         for i, d in enumerate(digits_in_text):
             # Find which token contains this digit
@@ -389,29 +467,29 @@ def verify(tokenizer: Tokenizer, sample_mode: bool = False):
             for t in clean_tokens:
                 if cumpos + len(t) > i:
                     # This token contains our digit — check it's not merged with
-                    # adjacent digits
+                    # adjacent digits (i.e., no other digit characters in this token)
                     digit_count_in_token = sum(1 for c in t if c.isdigit())
                     if digit_count_in_token > 1:
                         all_isolated = False
                     break
                 cumpos += len(t)
 
-        check(
-            f"Digits isolated in '{text}' ({label})",
-            all_isolated,
-            f"tokens: {clean_tokens}"
-        )
+        check(f"Digits isolated in '{text}' ({label})", all_isolated, f"tokens: {clean_tokens}")
 
     # --- 4. Round-trip ---
+    # Hard requirement: decode(encode(text)) == text for all representable inputs.
+    # A round-trip failure means the tokenizer is lossy — the model can never learn
+    # to reproduce certain text exactly, corrupting math answers and code output.
+    # The byte fallback makes this possible for all inputs, including emoji and CJK.
     print("\n  [Round-trip fidelity]")
     rt_cases = [
         "Hello, world!",
         "The answer is 42.",
-        "<think>\n1 + 1 = 2\n</think>\nThe answer is 2.",   # must keep <think> tokens
+        "<think>\n1 + 1 = 2\n</think>\nThe answer is 2.",  # must keep <think> tokens intact
         "def f(x): return x**2 + 3*x - 1",
-        "∫₀¹ x² dx = 1/3",           # Unicode math
-        "中文测试",                      # Non-ASCII
-        "emoji: 🤔💭",                  # Emoji (byte fallback)
+        "∫₀¹ x² dx = 1/3",  # Unicode math
+        "中文测试",  # Non-ASCII (multi-byte UTF-8)
+        "emoji: 🤔💭",  # Emoji (byte fallback required: 4-byte UTF-8 sequences)
     ]
     bos = tokenizer.token_to_id("<bos>")
     eos = tokenizer.token_to_id("<eos>")
@@ -420,50 +498,59 @@ def verify(tokenizer: Tokenizer, sample_mode: bool = False):
         enc = tokenizer.encode(text)
         # Decode keeping all tokens (including <think>/</think>),
         # but strip the auto-added <bos> and <eos> post-processor wrappers.
+        # We compare against the original text without those framing tokens.
         ids_no_wrapper = [i for i in enc.ids if i not in (bos, eos)]
         decoded = tokenizer.decode(ids_no_wrapper, skip_special_tokens=False)
         label = f"Round-trip: '{text[:30]}...'" if len(text) > 30 else f"Round-trip: '{text}'"
         check(
             label,
             decoded.strip() == text.strip(),
-            f"got='{decoded[:60]}'" if decoded.strip() != text.strip() else ""
+            f"got='{decoded[:60]}'" if decoded.strip() != text.strip() else "",
         )
 
     # --- 5. <think> tokens ---
+    # Hard requirement: <think> and </think> must each encode as a single token ID,
+    # not as a multi-token sequence. During GRPO training the reward function checks
+    # for the <think>...</think> pattern by token ID. If these tokens split into
+    # multiple pieces, format_reward() will fail to detect the CoT block.
     print("\n  [Chain-of-thought tokens]")
     cot_text = "<think>\nstep 1\nstep 2\n</think>"
     enc = tokenizer.encode(cot_text)
     think_start_id = tokenizer.token_to_id("<think>")
-    think_end_id   = tokenizer.token_to_id("</think>")
+    think_end_id = tokenizer.token_to_id("</think>")
 
     check(
         "<think> encodes as single token",
         think_start_id in enc.ids,
-        f"<think> ID={think_start_id}, found in {enc.ids[:8]}..."
+        f"<think> ID={think_start_id}, found in {enc.ids[:8]}...",
     )
     check(
-        "</think> encodes as single token",
-        think_end_id in enc.ids,
-        f"</think> ID={think_end_id}"
+        "</think> encodes as single token", think_end_id in enc.ids, f"</think> ID={think_end_id}"
     )
 
     # --- 6. No <unk> on common inputs ---
+    # Hard requirement (on a production tokenizer): byte fallback must prevent <unk> entirely.
+    # If <unk> appears here, it means ByteLevel.alphabet() was not passed to BpeTrainer
+    # as initial_alphabet, and some byte values are missing from the vocabulary.
+    # In sample mode, a tiny corpus may not exercise all paths — this check is still
+    # informative but less critical.
     print("\n  [No unknown tokens on typical inputs]")
     unk_id = tokenizer.token_to_id("<unk>")
     for text in ["Hello world", "x = 3.14", "def f(): pass"]:
         enc = tokenizer.encode(text)
-        # <unk> should never appear due to byte fallback
-        check(
-            f"No <unk> in '{text}'",
-            unk_id not in enc.ids
-        )
+        # <unk> should never appear due to byte fallback — all bytes are in the vocabulary
+        check(f"No <unk> in '{text}'", unk_id not in enc.ids)
 
     # --- 7. Compression ratio sanity ---
+    # Informational (warn in sample mode, fail in production): measures tokenizer efficiency.
+    # A real BPE trained on natural language achieves ~3-5 chars/token. Falling below 2.0
+    # means the tokenizer is barely merging anything — the model will process sequences
+    # ~2× longer than necessary, increasing compute and reducing effective context length.
     print("\n  [Compression ratio]")
     sample = " ".join(get_sample_corpus())
     enc = tokenizer.encode(sample)
     chars = len(sample)
-    toks  = len(enc.ids)
+    toks = len(enc.ids)
     ratio = chars / toks
     check(
         f"Compression ratio ≥ 2.0 chars/token (got {ratio:.2f})",
@@ -473,7 +560,7 @@ def verify(tokenizer: Tokenizer, sample_mode: bool = False):
     )
 
     # --- Summary ---
-    print("\n" + "-"*60)
+    print("\n" + "-" * 60)
     print(f"  Result: {passed} passed, {warned} warned, {failed} failed")
     if failed == 0:
         if warned > 0:
@@ -484,7 +571,7 @@ def verify(tokenizer: Tokenizer, sample_mode: bool = False):
     else:
         print("  ✗ FAILURES DETECTED. Fix before proceeding.")
         print("    A broken tokenizer will silently degrade reasoning capability.")
-    print("="*60 + "\n")
+    print("=" * 60 + "\n")
 
     return failed == 0
 
@@ -493,26 +580,27 @@ def verify(tokenizer: Tokenizer, sample_mode: bool = False):
 # Demo: show tokenization of interesting examples
 # ---------------------------------------------------------------------------
 
+
 def demo(tokenizer: Tokenizer):
     """Print tokenization of representative examples."""
     print("\nDEMO — Tokenization examples")
-    print("-"*60)
+    print("-" * 60)
 
     examples = [
-        ("Simple text",     "The answer is 42."),
-        ("Arithmetic",      "142 + 358 = 500"),
-        ("Decimal",         "3.14159 ≈ π"),
-        ("Large number",    "1,307,674,368,000"),
-        ("Negative float",  "-273.15"),
-        ("Code",            "for i in range(100):"),
-        ("CoT format",      "<think>\n2+2=4\n</think>"),
-        ("Unicode math",    "∑ᵢ xᵢ²"),
+        ("Simple text", "The answer is 42."),
+        ("Arithmetic", "142 + 358 = 500"),
+        ("Decimal", "3.14159 ≈ π"),
+        ("Large number", "1,307,674,368,000"),
+        ("Negative float", "-273.15"),
+        ("Code", "for i in range(100):"),
+        ("CoT format", "<think>\n2+2=4\n</think>"),
+        ("Unicode math", "∑ᵢ xᵢ²"),
     ]
 
     for label, text in examples:
         enc = tokenizer.encode(text)
         tokens = enc.tokens
-        ids    = enc.ids
+        ids = enc.ids
         print(f"\n  {label}: {repr(text)}")
         print(f"  tokens ({len(tokens)}): {tokens}")
         print(f"  ids:    {ids}")
@@ -521,6 +609,7 @@ def demo(tokenizer: Tokenizer):
 # ---------------------------------------------------------------------------
 # CLI
 # ---------------------------------------------------------------------------
+
 
 def main():
     parser = argparse.ArgumentParser(
