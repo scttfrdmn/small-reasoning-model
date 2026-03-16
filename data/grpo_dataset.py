@@ -38,7 +38,7 @@ Output schema per example:
   }
 
 Sources:
-  MATH (Hendrycks)  — "lighteval/MATH"          — problem, solution, level
+  MATH (Hendrycks)  — "hendrycks/competition_math" — problem, solution, level
   GSM8K             — "openai/gsm8k" (main)      — question, answer (#### N at end)
   NuminaMath-TIR    — "AI-MO/NuminaMath-TIR"    — problem, solution (\boxed{} answer)
   LogiQA            — "lucasmccabe/logiqa"       — query, options, correct_option
@@ -71,8 +71,23 @@ from typing import Generator, Optional
 ALL_SOURCES = ["math", "gsm8k", "numina_tir", "logiqa"]
 
 DATASET_IDS = {
-    "math": ("lighteval/MATH", None),  # (repo_id, config_name)
-    "gsm8k": ("openai/gsm8k", "main"),
+    # EleutherAI/hendrycks_math splits the 12 MATH topic categories into separate
+    # HuggingFace configs (algebra, geometry, …). We concatenate all of them.
+    # The value is (repo_id, configs) where configs is a list (one load per config)
+    # or None (load once without a config name).
+    "math": (
+        "EleutherAI/hendrycks_math",
+        [
+            "algebra",
+            "counting_and_probability",
+            "geometry",
+            "intermediate_algebra",
+            "number_theory",
+            "prealgebra",
+            "precalculus",
+        ],
+    ),
+    "gsm8k": ("openai/gsm8k", ["main"]),
     "numina_tir": ("AI-MO/NuminaMath-TIR", None),
     "logiqa": ("lucasmccabe/logiqa", None),
 }
@@ -353,27 +368,42 @@ def stream_source(source: str, limit: Optional[int] = None) -> Generator[dict, N
         print("ERROR: `datasets` library not installed. Run: uv sync", file=sys.stderr)
         return
 
-    repo_id, config_name = DATASET_IDS[source]
+    repo_id, configs = DATASET_IDS[source]
     formatter = FORMATTERS[source]
+
+    # configs is either None (no sub-config needed) or a list of config name strings.
+    # When it's a list we concatenate all sub-configs into a single stream.
+    # gsm8k uses ["main"] so it goes through the same list path.
+    if configs is None:
+        config_list = [None]
+    else:
+        config_list = configs
 
     print(f"  Loading {source} ({repo_id}) …", flush=True)
 
-    try:
-        if config_name:
-            ds = load_dataset(
-                repo_id, config_name, split="train", streaming=True, trust_remote_code=True
-            )
-        else:
-            ds = load_dataset(repo_id, split="train", streaming=True, trust_remote_code=True)
-    except Exception as exc:
-        print(f"  WARNING: could not load {source} ({repo_id}): {exc}", file=sys.stderr)
-        print(f"  Skipping {source} and continuing.", file=sys.stderr)
-        return
+    # Build a combined iterator across all configs.
+    def _iter_all_configs():
+        for cfg in config_list:
+            try:
+                if cfg is not None:
+                    ds = load_dataset(
+                        repo_id, cfg, split="train", streaming=True, trust_remote_code=True
+                    )
+                else:
+                    ds = load_dataset(
+                        repo_id, split="train", streaming=True, trust_remote_code=True
+                    )
+                yield from ds
+            except Exception as exc:
+                print(
+                    f"  WARNING: could not load {source} config={cfg} ({repo_id}): {exc}",
+                    file=sys.stderr,
+                )
 
     count = 0
     skipped = 0
 
-    for raw in ds:
+    for raw in _iter_all_configs():
         try:
             formatted = formatter(raw)
         except Exception as exc:

@@ -7,6 +7,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+- `data/grpo_dataset.py` — corrected MATH dataset source from removed `lighteval/MATH`
+  to `EleutherAI/hendrycks_math`; updated loader to iterate across all 7 topic
+  sub-configs (algebra, counting_and_probability, geometry, intermediate_algebra,
+  number_theory, prealgebra, precalculus) since that repo requires a config name
+
 ### Added
 - `training/pretrain.py` — Apple MPS (Metal Performance Shaders) backend support for
   local smoke testing on Apple Silicon; auto-detects MPS when CUDA is unavailable;
