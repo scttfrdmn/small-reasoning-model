@@ -342,27 +342,25 @@ def stream_numinamath(seed: int) -> Generator[Dict, None, None]:
 
 def stream_the_stack(seed: int) -> Generator[Dict, None, None]:
     """
-    Stream The Stack v2 small IDs sample (bigcode/the-stack-v2-train-smol-ids).
+    Stream StarCoderData (bigcode/starcoderdata) — a large public code corpus.
 
-    The Stack v2 is a deduplicated corpus of permissively licensed source code.
-    The "-smol-ids" variant is a small representative sample suitable for
-    validation runs.  Code pre-training builds the structured-reasoning
-    "circuits" that transfer to math and multi-step reasoning in Phase 2.
-
-    Note: This dataset requires a HuggingFace access token if it is gated.
-    If the dataset is not accessible (no token / access denied), we warn and
-    skip — the pipeline continues with the remaining sources.  For production,
-    authenticate with `huggingface-cli login` and grant access on the dataset
-    page.
+    Original plan was The Stack v2 (bigcode/the-stack-v2-train-smol-ids) but
+    that dataset is gated and requires explicit HuggingFace approval.
+    StarCoderData is the permissively-licensed deduplicated corpus used to train
+    StarCoder; it is publicly accessible without any approval step and covers
+    ~80 programming languages.  It serves the same training objective: building
+    structured-reasoning "circuits" that transfer to math and multi-step reasoning
+    in Phase 2.
 
     Field used: "content" (the source code text).
     """
     try:
         ds = load_dataset(
-            "bigcode/the-stack-v2-train-smol-ids",
+            "bigcode/starcoderdata",
+            data_dir="python",  # start with Python — highest quality, most reasoning-relevant
             split="train",
             streaming=True,
-            trust_remote_code=True,
+            trust_remote_code=False,
         )
         ds = ds.shuffle(seed=seed, buffer_size=10_000)
         for doc in ds:
@@ -373,7 +371,7 @@ def stream_the_stack(seed: int) -> Generator[Dict, None, None]:
         # Gated dataset: warn clearly rather than crash so the rest of the
         # pipeline keeps running.
         print(
-            f"[WARN] the_stack stream failed (likely gated — run " f"`huggingface-cli login`): {e}",
+            f"[WARN] the_stack (starcoderdata) stream failed: {e}",
             file=sys.stderr,
         )
         return
@@ -471,7 +469,11 @@ class MixedStreamSampler:
         self.target_tokens = target_tokens
         self.rng = random.Random(seed)
 
-        # Lazily opened generators, one per source
+        # Lazily opened generators, one per source.
+        # Sources are removed from this dict when they exhaust or become inaccessible.
+        # stream() uses self._generators.keys() as the live allow-list so that
+        # get_stage_mix() stage entries are always filtered to reachable sources,
+        # even when the user did not specify --sources (allowed_sources=None).
         self._generators: Dict[str, Optional[Generator]] = {s: None for s in active_sources}
 
     def _get_generator(self, source: str) -> Generator:
@@ -500,7 +502,16 @@ class MixedStreamSampler:
         simple mutable container.
         """
         while True:
-            mix = get_stage_mix(tokens_written_ref[0], self.target_tokens, self.allowed_sources)
+            # Build the effective allow-set: intersection of the caller's --sources
+            # filter and the sources still alive in self._generators.  Using
+            # self._generators.keys() as the live filter ensures that when a source
+            # is removed due to access failure, it disappears from future stage mixes
+            # even when allowed_sources=None (i.e. the user did not specify --sources).
+            live = set(self._generators.keys())
+            effective_allowed = (
+                live if self.allowed_sources is None else (live & self.allowed_sources)
+            )
+            mix = get_stage_mix(tokens_written_ref[0], self.target_tokens, effective_allowed)
 
             # Choose a source proportionally
             sources = [s for s, _ in mix]

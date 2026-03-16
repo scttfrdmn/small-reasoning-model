@@ -8,6 +8,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [Unreleased]
 
 ### Fixed
+- `data/preprocess.py` — fixed `KeyError` when an inaccessible source is removed from
+  `MixedStreamSampler._generators` but `allowed_sources=None` allows it back through
+  `get_stage_mix()`; `stream()` now computes `effective_allowed` as the intersection
+  of `_generators.keys()` and `allowed_sources`, so dead sources disappear from future
+  stage-mix draws regardless of whether `--sources` was specified
+- `data/preprocess.py` — replaced gated `bigcode/the-stack-v2-train-smol-ids` (requires
+  HuggingFace approval) with public `bigcode/starcoderdata` (Python subset); same
+  training objective (code → structured-reasoning circuits), no token/approval required
 - `data/grpo_dataset.py` — corrected MATH dataset source from removed `lighteval/MATH`
   to `EleutherAI/hendrycks_math`; updated loader to iterate across all 7 topic
   sub-configs (algebra, counting_and_probability, geometry, intermediate_algebra,
