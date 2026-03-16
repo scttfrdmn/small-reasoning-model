@@ -342,29 +342,37 @@ def stream_numinamath(seed: int) -> Generator[Dict, None, None]:
 
 def stream_the_stack(seed: int) -> Generator[Dict, None, None]:
     """
-    Stream StarCoderData (bigcode/starcoderdata) — a large public code corpus.
+    Stream codeparrot/github-code — a large, publicly accessible code corpus.
 
-    Original plan was The Stack v2 (bigcode/the-stack-v2-train-smol-ids) but
-    that dataset is gated and requires explicit HuggingFace approval.
-    StarCoderData is the permissively-licensed deduplicated corpus used to train
-    StarCoder; it is publicly accessible without any approval step and covers
-    ~80 programming languages.  It serves the same training objective: building
-    structured-reasoning "circuits" that transfer to math and multi-step reasoning
-    in Phase 2.
+    History of dataset choices:
+      1. bigcode/the-stack-v2-train-smol-ids — gated, requires HF approval
+      2. bigcode/starcoderdata               — also gated as of 2026
+      3. codeparrot/github-code              — public, no approval needed ✓
 
-    Field used: "content" (the source code text).
+    codeparrot/github-code contains ~115B tokens of permissively licensed code
+    across 32 languages.  Python is the most reasoning-relevant for our purposes
+    (algorithm problems, math computations, unit tests).  We filter to Python
+    by specifying the config name.
+
+    Code pre-training is important because it teaches:
+      - Structured stepwise reasoning (function bodies, conditionals)
+      - Variable binding and state tracking across lines
+      - Arithmetic and algorithmic patterns that transfer to GRPO math tasks
+
+    Field used: "code" (the source file contents).
     """
     try:
         ds = load_dataset(
-            "bigcode/starcoderdata",
-            data_dir="python",  # start with Python — highest quality, most reasoning-relevant
+            "codeparrot/github-code",
+            languages=["Python"],  # Python is most reasoning-relevant; avoids very large download
             split="train",
             streaming=True,
             trust_remote_code=False,
         )
         ds = ds.shuffle(seed=seed, buffer_size=10_000)
         for doc in ds:
-            content = doc.get("content", "")
+            # codeparrot/github-code uses "code" field (not "content")
+            content = doc.get("code", "") or doc.get("content", "")
             if content:
                 yield {"text": content, "source": "the_stack"}
     except Exception as e:
