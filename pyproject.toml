@@ -2,6 +2,10 @@
 name = "small-reasoning-model"
 version = "0.1.0"
 description = "Small reasoning model designed at target size — not quantized down from larger"
+readme = "README.md"
+license = { text = "Apache-2.0" }
+authors = [{ name = "Scott Friedman" }]
+keywords = ["machine-learning", "language-model", "reasoning", "grpo", "trainium"]
 requires-python = ">=3.11"
 dependencies = [
     # Core ML
@@ -54,4 +58,9 @@ packages = ["model", "tokenizer", "data", "training", "eval", "inference"]
 dev = [
     "pytest>=8.0",
     "pytest-timeout>=2.3",
+    "black>=24.0",
 ]
+
+[tool.black]
+line-length = 100
+target-version = ["py311"]
