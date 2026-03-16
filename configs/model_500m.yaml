@@ -1,0 +1,61 @@
+# Config A — ~489M parameters
+# Hardware: RTX 5090 (32GB) — validation run
+# Purpose:  Validate loss curve, tokenizer, architecture choices before full run
+
+model:
+  d_model: 1280            # 1280 / 128 = 10 ✓ tile-aligned
+  n_layers: 26
+  n_heads: 10              # 10 × 128 = 1280 = d_model ✓
+  n_kv_heads: 2            # GQA ratio 5:1
+  head_dim: 128            # maps to Trn2 SBUF partition dimension
+  ffn_intermediate: 3456   # 3456 / 128 = 27 ✓ tile-aligned
+  vocab_size: 32768        # 32768 / 128 = 256 ✓ tile-aligned
+  max_seq_len: 8192
+  rope_base: 500000
+  dropout: 0.0
+  tie_embeddings: true
+  norm_eps: 1.0e-5
+
+# Parameter breakdown:
+#   Per-layer attention: 3.93M
+#   Per-layer FFN:      13.27M
+#   Per-layer total:    17.20M × 26 = 447M
+#   Embedding (tied):   41.9M
+#   Total:              ~489M
+
+pretrain:
+  max_tokens: 10_000_000_000   # 10B tokens (~20× Chinchilla)
+  max_seq_len: 2048
+  batch_size: 4
+  grad_accum: 64               # effective batch ~512K tokens/step
+  optimizer: adamw
+  lr: 2.4e-4                   # scaled from 1B ref: lr ∝ sqrt(batch)
+  lr_min: 2.4e-5
+  beta1: 0.9
+  beta2: 0.95
+  eps: 1.0e-8
+  weight_decay: 0.1
+  grad_clip: 1.0
+  warmup_fraction: 0.02
+  dtype: bfloat16
+  grad_checkpointing: true
+
+sft:
+  lr: 3.0e-5
+  lr_min: 3.0e-6
+  epochs: 2
+  batch_size: 128
+  max_seq_len: 4096
+  warmup_fraction: 0.03
+  dtype: bfloat16
+
+grpo:
+  lr: 5.0e-7
+  group_size: 8
+  kl_coeff: 0.01
+  ppo_clip_low: 0.20
+  ppo_clip_high: 0.28
+  max_gen_tokens: 2048
+  temperature: 0.8
+  steps: 5000
+  dtype: bfloat16

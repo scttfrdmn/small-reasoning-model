@@ -1,0 +1,63 @@
+# Python
+__pycache__/
+*.py[cod]
+*.pyo
+*.pyd
+.Python
+*.egg-info/
+dist/
+build/
+.eggs/
+
+# Virtual environments / uv
+.venv/
+venv/
+env/
+
+# uv lock (keep uv.lock in version control)
+# uv.lock  ← do NOT ignore this
+
+# Checkpoints and model weights (large binaries)
+checkpoints/
+*.pt
+*.pth
+*.bin
+*.safetensors
+*.gguf
+
+# Tokenizer output (generated — rebuild from train_tokenizer.py)
+tokenizer_output/
+
+# Training data (too large for git)
+data/raw/
+data/processed/
+*.jsonl
+*.parquet
+*.arrow
+
+# Evaluation results
+eval/results/
+*.json
+
+# Logs
+*.log
+logs/
+runs/
+wandb/
+
+# macOS
+.DS_Store
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+
+# Jupyter
+.ipynb_checkpoints/
+*.ipynb
+
+# Temp / scratch
+/tmp/
+scratch/
