@@ -204,6 +204,7 @@ class TrainConfig:
     # ── Hardware backend ─────────────────────────────────────────────────────
     # "cuda"   → NVIDIA GPU (RTX 5090, H100, A100 …)
     # "neuron" → AWS Trainium via torch_neuronx / XLA
+    # "mps"    → Apple Silicon GPU (M-series Macs) — good for smoke tests
     # "cpu"    → Debug / unit test only; extremely slow
     backend: str = "cuda"
 
@@ -689,6 +690,13 @@ def train(cfg: TrainConfig):
         except ImportError:
             print("ERROR: torch_neuronx not found. Install Neuron SDK.")
             sys.exit(1)
+    elif cfg.backend == "mps":
+        if not torch.backends.mps.is_available():
+            print("WARNING: MPS not available, falling back to CPU")
+            device = torch.device("cpu")
+        else:
+            device = torch.device("mps")
+            print("Backend: Apple MPS (Metal Performance Shaders)")
     elif cfg.backend == "cuda":
         if not torch.cuda.is_available():
             print("WARNING: CUDA not available, falling back to CPU")
@@ -768,7 +776,9 @@ def train(cfg: TrainConfig):
         lr=cfg.lr,
         betas=(cfg.beta1, cfg.beta2),
         eps=cfg.eps,
-        fused=(cfg.backend == "cuda"),  # Fused kernel: faster on CUDA, unsupported elsewhere
+        # Fused AdamW merges the update into one CUDA kernel launch — ~5-15% faster.
+        # Only available on CUDA; MPS and CPU must use the unfused implementation.
+        fused=(cfg.backend == "cuda"),
     )
 
     # ── Schedule params ───────────────────────────────────────────────
@@ -833,6 +843,8 @@ def train(cfg: TrainConfig):
         train_dataset,
         batch_size=cfg.batch_size,
         num_workers=2 if cfg.data_path else 0,
+        # pin_memory enables async DMA transfers from CPU to GPU — CUDA only.
+        # MPS uses unified memory (CPU/GPU share the same DRAM) so pinning has no effect.
         pin_memory=(cfg.backend == "cuda"),
         prefetch_factor=4 if cfg.data_path else None,
     )
@@ -853,9 +865,12 @@ def train(cfg: TrainConfig):
     # Trainium handles mixed precision via its own XLA casting; autocast
     # on "cpu" device type is a no-op here — we just need a valid context.
     autocast_ctx = torch.amp.autocast(
-        device_type="cuda" if cfg.backend == "cuda" else "cpu",
+        # autocast device_type must match the tensor device.
+        # MPS supports bfloat16 ops natively in PyTorch 2.x but uses "mps"
+        # as the device_type string. Neuron handles its own precision — skip.
+        device_type="cuda" if cfg.backend == "cuda" else ("mps" if cfg.backend == "mps" else "cpu"),
         dtype=dtype,
-        enabled=(dtype == torch.bfloat16 and cfg.backend != "neuron"),
+        enabled=(dtype == torch.bfloat16 and cfg.backend not in ("neuron", "cpu")),
     )
 
     # ── Training loop ─────────────────────────────────────────────────
@@ -1019,9 +1034,12 @@ def evaluate(
 
     # Recreate the autocast context with the same settings as training
     autocast_ctx = torch.amp.autocast(
-        device_type="cuda" if cfg.backend == "cuda" else "cpu",
+        # autocast device_type must match the tensor device.
+        # MPS supports bfloat16 ops natively in PyTorch 2.x but uses "mps"
+        # as the device_type string. Neuron handles its own precision — skip.
+        device_type="cuda" if cfg.backend == "cuda" else ("mps" if cfg.backend == "mps" else "cpu"),
         dtype=dtype,
-        enabled=(dtype == torch.bfloat16 and cfg.backend != "neuron"),
+        enabled=(dtype == torch.bfloat16 and cfg.backend not in ("neuron", "cpu")),
     )
 
     for i, batch in enumerate(loader):
@@ -1208,7 +1226,11 @@ def validate_mode(model_config: str):
         lr=3e-4,
         grad_checkpointing=True,
         dtype="bfloat16",
-        backend="cuda" if torch.cuda.is_available() else "cpu",
+        backend=(
+            "cuda"
+            if torch.cuda.is_available()
+            else "mps" if torch.backends.mps.is_available() else "cpu"
+        ),
         log_every=1,  # Log every step so we can see the loss curve
         save_every=999999,  # Never save — avoid disk I/O during smoke test
         eval_every=10,  # Run one validation pass halfway through
@@ -1257,7 +1279,9 @@ def main():
     parser.add_argument(
         "--no_grad_ckpt", action="store_true", help="Disable gradient checkpointing"
     )
-    parser.add_argument("--backend", type=str, default="cuda", choices=["cuda", "neuron", "cpu"])
+    parser.add_argument(
+        "--backend", type=str, default="cuda", choices=["cuda", "neuron", "mps", "cpu"]
+    )
     parser.add_argument("--compile", action="store_true", help="torch.compile (CUDA only)")
     parser.add_argument("--resume", type=str, default="", help="Path to checkpoint to resume from")
 

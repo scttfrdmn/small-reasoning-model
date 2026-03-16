@@ -7,13 +7,33 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+- `training/pretrain.py` — Apple MPS (Metal Performance Shaders) backend support for
+  local smoke testing on Apple Silicon; auto-detects MPS when CUDA is unavailable;
+  disables fused AdamW (CUDA-only); configures autocast with `device_type="mps"`
+- `data/preprocess.py` — full implementation of pre-training data pipeline:
+  streaming download from HuggingFace (FineWeb-Edu, OpenWebMath, Wikipedia,
+  NuminaMath-TIR, The Stack v2 smol); heuristic quality filter (length, word count,
+  non-ASCII ratio) as practical substitute for GPT-2 perplexity scoring; SHA-256
+  exact dedup; `MixedStreamSampler` for three-stage curriculum mixing with
+  configurable per-stage proportions; outputs `train.jsonl` + `manifest.json`
+- `data/sft_format.py` — full implementation of SFT dataset downloader and reformatter:
+  downloads NuminaMath-CoT, OpenHermes-2.5, CodeFeedback, and Orca-Math via HuggingFace
+  streaming; wraps existing CoT solutions in `<think>` tags or applies the minimal
+  `<think>\nLet me work through this.\n{answer}\n</think>\n{answer}` template for
+  direct-QA sources; filters prompts >512 tokens and empty responses; writes
+  `sft_train.jsonl` / `sft_val.jsonl` (95/5 split) and `manifest.json`
+- `data/grpo_dataset.py` — full implementation of GRPO verifiable problem dataset builder:
+  downloads MATH (Hendrycks), GSM8K, NuminaMath-TIR, and LogiQA; extracts
+  ground-truth answers (`\boxed{}` extraction, `####` GSM8K parsing, option-text for
+  logic); writes `grpo_raw.jsonl` with `pass_rate: null`; implements
+  `filter_by_difficulty()` that loads an SFT checkpoint, generates G=8 completions per
+  problem, measures pass_rate, and keeps only the 20–80% difficulty window
+
 ### Planned
 - Phase 0 pre-training run on RTX 5090 (500M validation)
 - Phase 0 full run on AWS Trn2 (1B primary experiment)
 - NKI attention kernel for Trainium2 (`model/nki_attention.py`)
-- Data preprocessing pipeline (`data/preprocess.py`)
-- SFT dataset formatter (`data/sft_format.py`)
-- GRPO difficulty-filtered dataset builder (`data/grpo_dataset.py`)
 - lm-evaluation-harness integration (`eval/harness.py`)
 - GGUF export for llama.cpp (`inference/convert_gguf.py`)
 - Inference server (`inference/serve.py`)
