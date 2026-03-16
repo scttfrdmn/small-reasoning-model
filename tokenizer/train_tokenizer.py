@@ -235,8 +235,20 @@ def train_on_sample(output_dir: str) -> Tokenizer:
 def train_on_corpus(data_path: str, output_dir: str) -> Tokenizer:
     """
     Train on a real text corpus file.
-    File should be UTF-8 text, one document per line (or just raw text).
-    For large corpora, use a generator to avoid loading everything into memory.
+
+    Accepts two formats, auto-detected by the first non-empty line:
+      - JSONL: each line is {"text": "...", ...} — the output format of data/preprocess.py.
+              Only the "text" field is used; other fields (source, etc.) are ignored.
+      - Plain text: UTF-8, one document per line (or raw continuous text).
+
+    Why JSONL detection: the preprocess.py pipeline produces JSONL, and feeding
+    that directly to the tokenizer avoids an intermediate extraction step and
+    keeps the pipeline simple. Detection is by trying json.loads() on the first
+    non-blank line rather than checking the file extension, which is more robust.
+
+    Memory usage is O(1) in corpus size — only one line is live at a time.
+    This matters at scale: a 50GB corpus would require 50GB of RAM if fully
+    loaded, but with a generator it uses only a few KB.
     """
     print(f"Training on corpus: {data_path}")
     tokenizer = Tokenizer(BPE(unk_token="<unk>"))
@@ -246,12 +258,37 @@ def train_on_corpus(data_path: str, output_dir: str) -> Tokenizer:
     trainer = build_trainer()
 
     def file_iterator(path: str) -> Iterator[str]:
-        # Generator: yields one stripped line at a time, skipping blank lines.
-        # Memory usage is O(1) in corpus size — only one line live at a time.
+        # Auto-detect JSONL vs plain text by peeking at the first non-empty line.
+        # We re-open after peeking to avoid seeking, which isn't supported on all
+        # stream types (though for files it would work fine).
+        is_jsonl = False
         with open(path, "r", encoding="utf-8", errors="replace") as f:
             for line in f:
                 line = line.strip()
-                if line:  # skip blank lines; they contribute nothing to BPE merge learning
+                if line:
+                    try:
+                        obj = json.loads(line)
+                        is_jsonl = isinstance(obj, dict) and "text" in obj
+                    except (json.JSONDecodeError, ValueError):
+                        is_jsonl = False
+                    break
+
+        fmt = "JSONL (extracting 'text' field)" if is_jsonl else "plain text"
+        print(f"  Corpus format: {fmt}")
+
+        with open(path, "r", encoding="utf-8", errors="replace") as f:
+            for line in f:
+                line = line.strip()
+                if not line:
+                    continue
+                if is_jsonl:
+                    try:
+                        text = json.loads(line).get("text", "")
+                    except (json.JSONDecodeError, ValueError):
+                        continue  # skip malformed lines rather than crashing
+                    if text:
+                        yield text
+                else:
                     yield line
 
     tokenizer.train_from_iterator(file_iterator(data_path), trainer=trainer)
