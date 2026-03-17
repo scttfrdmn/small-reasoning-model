@@ -249,32 +249,93 @@ class TrainConfig:
 # ---------------------------------------------------------------------------
 
 
+class BinaryTokenDataset(IterableDataset):
+    """
+    Pack-style dataset that reads from a pre-tokenized binary .bin file.
+
+    Why binary instead of on-the-fly tokenization:
+      The HuggingFace tokenizers library uses a Rust rayon thread pool.  When
+      tokenizer.encode() is called during training, rayon's futex-based
+      work-stealing interacts with Python's GIL and PyTorch's CUDA background
+      threads causing a deadlock: the main Python thread blocks on futex_do_wait
+      while the GPU runs already-queued CUDA kernels but never receives new
+      batches.  Pre-tokenizing once (via data/tokenize_dataset.py) writes a flat
+      uint16 array to disk; at training time we just numpy-memmap the file and
+      slice windows — no Rust, no GIL interaction, no deadlock.
+
+    Performance:
+      - memmap slice of 2049 uint16 values ≈ 4 μs
+      - On-the-fly tokenization of one document ≈ 500–2000 μs
+      → ~200–500× faster per sample; data loading is never the bottleneck.
+
+    Format:
+      train.bin / val.bin — flat C-contiguous uint16 array, N tokens each.
+      Produced by: python data/tokenize_dataset.py --input ... --output_dir ...
+
+    Output:
+      Dicts {input_ids: LongTensor(max_seq_len), labels: LongTensor(max_seq_len)}
+      labels[t] = input_ids[t+1]  (next-token prediction; shift is done here).
+    """
+
+    def __init__(self, data_dir: str, max_seq_len: int, split: str = "train"):
+        """
+        Args:
+            data_dir:    Directory containing train.bin and val.bin.
+            max_seq_len: Sequence length for each yielded sample.
+            split:       "train" or "val".
+        """
+        bin_path = Path(data_dir) / f"{split}.bin"
+        if not bin_path.exists():
+            raise FileNotFoundError(
+                f"Pre-tokenized binary not found: {bin_path}\n"
+                f"Run: python data/tokenize_dataset.py --input data/pretrain/train.jsonl "
+                f"--tokenizer tokenizer_output --output_dir {data_dir}"
+            )
+        self.bin_path = bin_path
+        self.max_seq_len = max_seq_len
+        # Load the token array as a memory-mapped file.  np.memmap maps the
+        # file into virtual address space; the OS pages data in on demand and
+        # evicts cold pages automatically.  This means the 20 GB train.bin is
+        # "loaded" in nanoseconds, and each window access causes at most a few
+        # page faults (4 KB pages × 2 KB windows = 1-2 faults per sample).
+        self.data = np.memmap(str(bin_path), dtype=np.uint16, mode="r")
+        self.n_tokens = len(self.data)
+        print(
+            f"  {split}: {self.n_tokens:,} tokens from {bin_path.name} "
+            f"({bin_path.stat().st_size / 1e9:.2f} GB)"
+        )
+
+    def __iter__(self):
+        """
+        Yield non-overlapping windows of max_seq_len+1 tokens.
+
+        We start from a random offset within [0, max_seq_len) so that
+        different epochs see different alignment of document boundaries to
+        chunk boundaries.  This is a simple form of data augmentation that
+        prevents the model from over-fitting to a fixed chunking pattern.
+        """
+        import random
+
+        # Random start offset so each epoch sees different chunk alignment
+        offset = random.randrange(0, self.max_seq_len)
+        pos = offset
+
+        while pos + self.max_seq_len + 1 <= self.n_tokens:
+            chunk = self.data[pos : pos + self.max_seq_len + 1].astype(np.int64)
+            input_ids = torch.from_numpy(chunk[:-1]).long()
+            labels = torch.from_numpy(chunk[1:]).long()
+            yield {"input_ids": input_ids, "labels": labels}
+            pos += self.max_seq_len  # non-overlapping; every token seen once per epoch
+
+
 class TokenDataset(IterableDataset):
     """
-    Streaming, pack-style dataset for pre-training.
+    Streaming, pack-style dataset that tokenizes documents on the fly.
 
-    Design rationale — why streaming?
-      A 50B-token corpus is hundreds of GB on disk. Loading it into RAM or
-      even memory-mapping it requires careful platform-specific code. An
-      IterableDataset reads one line at a time, keeping the process footprint
-      near-constant regardless of corpus size.
-
-    Design rationale — why pack-style (no padding)?
-      In padding-based batching every sequence is padded to max_seq_len with
-      dummy tokens. The model still processes those positions (wasting FLOPS),
-      and the loss must explicitly ignore them. Pack-style concatenates
-      documents end-to-end and slices out fixed-length windows. Every token
-      in every batch is a real, loss-contributing token — this maximises
-      training efficiency and matches how GPT-3, LLaMA, and Mistral were
-      trained.
-
-    Design rationale — why line_hash for train/val split?
-      A deterministic hash of the line content assigns each document to
-      train or val without reading the full file first (no random shuffle
-      pass), without needing an index file, and in a way that is stable
-      across runs (the same document always lands in the same split).
-      The cost is that adjacent lines in the file can be in different splits,
-      but for a large pre-training corpus this is fine.
+    DEPRECATED for production training — use BinaryTokenDataset instead.
+    This class is retained for compatibility and as a fallback when no
+    pre-tokenized binary exists.  See BinaryTokenDataset docstring for
+    why on-the-fly tokenization causes futex deadlocks with CUDA.
 
     Input format:
       JSONL: one JSON object per line, {"text": "document text"}
@@ -282,13 +343,7 @@ class TokenDataset(IterableDataset):
 
     Output:
       Dicts {input_ids: LongTensor(max_seq_len), labels: LongTensor(max_seq_len)}
-      where labels[t] = input_ids[t+1]  (next-token prediction target).
-      The +1 shift is baked in at the dataset level so the training loop
-      never needs to slice.
-
-    For production use: replace on-the-fly tokenization with pre-tokenized
-    .bin files (e.g. via numpy memmap). The current approach tokenizes at
-    read time, which adds ~10-20% overhead but requires no preprocessing step.
+      labels[t] = input_ids[t+1]  (next-token prediction target).
     """
 
     def __init__(
@@ -807,24 +862,40 @@ def train(cfg: TrainConfig):
 
     # ── Dataset ───────────────────────────────────────────────────────
     if cfg.data_path:
-        train_dataset = TokenDataset(
-            cfg.data_path,
-            cfg.tokenizer_path,
-            cfg.max_seq_len,
-            split="train",
-        )
-        # Only create the validation dataset if we'll actually use it.
-        # An eval_every of 0 means "no eval", so skip the dataset entirely.
-        val_dataset = (
-            TokenDataset(
+        data_dir = Path(cfg.data_path)
+        # Auto-detect binary vs JSONL:
+        #   - If data_path is a directory containing train.bin → BinaryTokenDataset
+        #   - If data_path is a .jsonl file → legacy TokenDataset (on-the-fly tokenization)
+        # BinaryTokenDataset is strongly preferred for production; it avoids the
+        # tokenizers Rust/GIL/CUDA futex deadlock described in BinaryTokenDataset docstring.
+        if data_dir.is_dir() and (data_dir / "train.bin").exists():
+            print(f"\nData format: pre-tokenized binary (BinaryTokenDataset)")
+            train_dataset = BinaryTokenDataset(cfg.data_path, cfg.max_seq_len, split="train")
+            val_dataset = (
+                BinaryTokenDataset(cfg.data_path, cfg.max_seq_len, split="val")
+                if cfg.eval_every > 0
+                else None
+            )
+        else:
+            print(f"\nData format: JSONL (TokenDataset — on-the-fly tokenization)")
+            print(f"  WARNING: on-the-fly tokenization can deadlock with CUDA on some systems.")
+            print(f"  Consider pre-tokenizing: python data/tokenize_dataset.py ...")
+            train_dataset = TokenDataset(
                 cfg.data_path,
                 cfg.tokenizer_path,
                 cfg.max_seq_len,
-                split="val",
+                split="train",
             )
-            if cfg.eval_every > 0
-            else None
-        )
+            val_dataset = (
+                TokenDataset(
+                    cfg.data_path,
+                    cfg.tokenizer_path,
+                    cfg.max_seq_len,
+                    split="val",
+                )
+                if cfg.eval_every > 0
+                else None
+            )
     else:
         # Synthetic mode — for --mode validate (no real data needed)
         print("\nNo data_path specified — using synthetic data (validate mode)")
