@@ -8,6 +8,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [Unreleased]
 
 ### Fixed
+- `training/pretrain.py` — fixed futex deadlock when training with real data:
+  `IterableDataset + num_workers=2 + pin_memory=True + CUDA` causes the main process
+  to block on a futex waiting for the pin_memory thread while DataLoader workers hold
+  the lock; manifested as 98% GPU + 100% CPU with zero logged steps for hours;
+  fixed by setting `num_workers=0, pin_memory=False` — data loading stays in the main
+  thread and does not compete with the CUDA allocator
 - `data/preprocess.py` — fixed `KeyError` when an inaccessible source is removed from
   `MixedStreamSampler._generators` but `allowed_sources=None` allows it back through
   `get_stage_mix()`; `stream()` now computes `effective_allowed` as the intersection

@@ -831,22 +831,42 @@ def train(cfg: TrainConfig):
         train_dataset = SyntheticDataset(model_cfg.vocab_size, cfg.max_seq_len, n_batches=500)
         val_dataset = SyntheticDataset(model_cfg.vocab_size, cfg.max_seq_len, n_batches=20)
 
-    # num_workers=2 enables background prefetching via subprocesses when using
-    # real data (tokenization is CPU-bound). With synthetic data we use 0 because
-    # there is no I/O to overlap and forking just adds overhead.
-    # pin_memory=True allocates host tensors in pinned (page-locked) memory so
-    # that the CUDA DMA engine can copy them to GPU asynchronously, overlapping
-    # with the previous batch's compute. Not beneficial for CPU or XLA.
-    # prefetch_factor=4 means each worker pre-loads 4 batches ahead, keeping
-    # the GPU busy even when tokenization is slow.
+    # num_workers=0: run data loading in the main process thread.
+    #
+    # Why not num_workers > 0 with IterableDataset:
+    #   PyTorch's DataLoader forks worker processes AFTER the model is already
+    #   on CUDA.  When pin_memory=True is combined with num_workers > 0 and an
+    #   IterableDataset, the pin-memory thread and worker processes end up in a
+    #   futex deadlock — the main process waits on a lock that a worker holds,
+    #   while the worker waits on pin_memory queue operations.  The bug manifests
+    #   as 100 % CPU + 98 % GPU utilisation with zero logged steps (training is
+    #   technically running in the GPU async queue, but nothing ever completes
+    #   from the Python perspective because the DataLoader never yields the next
+    #   batch to the main thread).
+    #
+    #   For map-style datasets (with __getitem__) forked workers are safe because
+    #   each worker independently indexes into a shared-memory array.  For
+    #   IterableDataset the workers each iterate the full sequence, which requires
+    #   explicit sharding logic to avoid data duplication AND the fork+CUDA+pin_memory
+    #   combination that causes the deadlock.
+    #
+    # Why num_workers=0 is still fast enough:
+    #   With gradient_accumulation=128, the GPU is busy for ~100 s per logged step.
+    #   The CPU needs to tokenise one micro-batch (4 × 2048 = 8192 tokens ≈ 32 KB
+    #   of text) per micro-step.  At typical disk/tokeniser throughput this takes
+    #   ~1 ms per micro-step, vs ~1 s of GPU compute.  Data loading never becomes
+    #   the bottleneck: the GPU is idle <1 % of the time waiting for data.
+    #
+    # pin_memory=False for the same reason: pin_memory spawns an additional
+    # background thread that interacts with the CUDA allocator.  With num_workers=0
+    # the tensors are created directly in the main thread and moved to CUDA via
+    # .to(device), which is synchronous and equally fast for our batch sizes.
     train_loader = DataLoader(
         train_dataset,
         batch_size=cfg.batch_size,
-        num_workers=2 if cfg.data_path else 0,
-        # pin_memory enables async DMA transfers from CPU to GPU — CUDA only.
-        # MPS uses unified memory (CPU/GPU share the same DRAM) so pinning has no effect.
-        pin_memory=(cfg.backend == "cuda"),
-        prefetch_factor=4 if cfg.data_path else None,
+        num_workers=0,  # IterableDataset + workers + pin_memory → futex deadlock
+        pin_memory=False,  # only useful when num_workers > 0
+        prefetch_factor=None,  # must be None when num_workers=0
     )
 
     # ── AMP autocast (BF16 mixed precision) ───────────────────────────
