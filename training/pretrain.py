@@ -56,6 +56,7 @@ from dataclasses import dataclass, asdict
 from pathlib import Path
 from typing import Iterator, Optional
 
+import numpy as np
 import torch
 import torch.nn as nn
 from torch.utils.data import DataLoader, IterableDataset
