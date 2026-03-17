@@ -46,7 +46,12 @@ done
 
 echo "[wait_and_pretrain] Launching Phase 0 pre-training (500M, 10B tokens)..."
 
-uv run srm-pretrain \
+# PYTHONUNBUFFERED=1 forces Python to flush stdout after every write rather than
+# buffering into 8 KB blocks.  Without it, output piped through tee is block-
+# buffered: the startup lines sit in the pipe buffer and the log file stays at 0
+# bytes until the first flush=True print fires (at step 0, ~100 s in).
+# With it, every print() lands in the log immediately.
+PYTHONUNBUFFERED=1 uv run srm-pretrain \
     --config 500m \
     --backend cuda \
     --data_path "$TRAIN_JSONL" \
