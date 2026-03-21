@@ -1,8 +1,18 @@
-# Building a Small Reasoning Model From Scratch
+# Small Models Have a Place: Building a Reasoning Model From Scratch
 
 A blog series covering the full stack of building a small language model with
-reasoning capability — from hardware constraints through architecture, training
-recipe, data pipelines, and deployment.
+reasoning capability — from hardware ecosystem through architecture, training
+recipe, data pipelines, and deployment across a heterogeneous fleet.
+
+**Thesis:** Small models (500M–1B parameters) are interesting in their own right,
+not just compromises on the way to something larger. They're private, fast,
+cheap, deployable on hardware you own — and with proper reasoning training, they
+punch above their weight on structured problem domains. This series is about
+building one that actually reasons.
+
+**Hardware:** RTX 5090 (primary training), RTX 4070 Ti SUPER (mid-range reference),
+2× Titan RTX NVLink (multi-GPU), 2× DGX Sparks GB10 (linked, 256GB unified),
+4× Jetson Orin NX (edge, NVDLA). Cloud (Trainium2, etc.) as excursions.
 
 **Audience:** People who want to understand how modern reasoning models actually
 work, including the non-obvious systems decisions and the bugs you hit when you
