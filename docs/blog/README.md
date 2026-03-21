@@ -27,15 +27,16 @@ wrong about, and what broke before it worked.
 
 | # | Title | Status | Topics |
 |---|-------|--------|--------|
-| 1 | [Why We're Building a Small Reasoning Model](01-motivation.md) | ✅ Written | Motivation, design principles, why small |
+| 1 | [Small Models Have a Place: Why We're Building This](01-motivation.md) | ✅ Written | Motivation, hardware fleet, design principles |
 | 2 | [Architecture: Every Decision, Every Trade-off](02-architecture.md) | ✅ Written | GQA, QK-Norm, SwiGLU, RoPE, pre-norm, tied embeddings |
-| 3 | [Hardware-First Design: Trainium2, Tile Alignment, and Quantization by Construction](03-hardware.md) | ✅ Written | Systolic arrays, tile alignment, BF16/FP8, GGUF |
+| 3 | [Hardware Ecosystem: Training, Evaluation, and Edge Deployment](03-hardware.md) | ✅ Written | Full fleet: ceres/vesta/janus/castor/pollux/Orin NX |
 | 4 | [The Tokenizer: BPE, Digit Splitting, and Teaching a Model to Think](04-tokenizer.md) | ✅ Written | BPE mechanics, digit tokenization, `<think>` tokens |
 | 5 | [10 Billion Tokens: Building a Pre-Training Data Pipeline](05-data-pipeline.md) | ✅ Written | Quality filtering, deduplication, curriculum mixing |
 | 6 | [Two Deadlocks and a GPU at 98%: Debugging the Training Infrastructure](06-debugging.md) | ✅ Written | Futex deadlocks, Rust thread pools, GIL interactions |
 | 7 | [Phase 1 SFT: Loss Masking and Teaching a Model to Think](07-sft.md) | ✅ Written | SFT mechanics, loss masking, `<think>` format |
 | 8 | [Phase 2 GRPO: Reinforcement Learning With Verifiable Rewards](08-grpo.md) | ✅ Written | GRPO algorithm, verifiable rewards, RL stability |
-| 9 | [Inference at the Edge: GGUF, Quantization, and Running on a Raspberry Pi](09-inference.md) | ✅ Written | GGUF format, quantization theory, Graviton4, edge targets |
+| 9 | [Inference at the Edge: GGUF, Quantization, and the Full Fleet](09-inference.md) | ✅ Written | GGUF format, quantization theory, hardware deployment |
+| 10 | [What Determines Context Length? A Systems-Level Explanation](10-context-length.md) | ✅ Written | KV cache, O(T²) attention, RoPE extrapolation, per-hardware analysis |
 
 ---
 
