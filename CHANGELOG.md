@@ -52,6 +52,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   keeps only 20–80% pass-rate problems for GRPO training signal
 
 ### Fixed
+- `training/sft.py` — fix `SFTDataset` file discovery: priority chain checked
+  for `{split}.jsonl` (i.e. `train.jsonl`/`val.jsonl`) which don't exist, then
+  fell through to glob all `*.jsonl`, loading both `sft_train.jsonl` and
+  `sft_val.jsonl` for both splits; train and val used identical 2.15M-example
+  sets so val loss had no independent signal and early stopping was invalid;
+  fix adds `sft_{split}.jsonl` as the first-priority pattern in the chain
 - `training/rewards.py` — fix `code_execution_reward()` placeholder: after
   `exec(code, ns)`, find the first callable in `ns`, call it with `tc["input"]`,
   compare return value to `tc["expected_output"]` with exact match or
