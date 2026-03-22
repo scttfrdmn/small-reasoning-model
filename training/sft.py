@@ -550,8 +550,12 @@ class SFTDataset(Dataset):
         data_dir = Path(data_dir)
 
         # ── File discovery ────────────────────────────────────────────────
-        # Priority: explicit {split}.jsonl → data.jsonl → all *.jsonl
-        if (data_dir / f"{split}.jsonl").exists():
+        # Priority: sft_{split}.jsonl → {split}.jsonl → data.jsonl → all *.jsonl
+        # sft_format.py writes sft_train.jsonl / sft_val.jsonl, so we check
+        # that prefix first before falling through to the generic patterns.
+        if (data_dir / f"sft_{split}.jsonl").exists():
+            files = [data_dir / f"sft_{split}.jsonl"]
+        elif (data_dir / f"{split}.jsonl").exists():
             files = [data_dir / f"{split}.jsonl"]
         elif (data_dir / "data.jsonl").exists():
             files = [data_dir / "data.jsonl"]
