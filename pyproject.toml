@@ -31,6 +31,9 @@ dependencies = [
 eval = [
     "lm-eval>=0.4",
 ]
+inference = [
+    "gguf>=0.6",
+]
 neuron = [
     # Install separately on Trn2 instances via Neuron SDK
     # pip install torch-neuronx neuronx-cc --extra-index-url https://pip.repos.neuron.amazonaws.com
@@ -46,6 +49,9 @@ srm-sft        = "training.sft:main"
 srm-grpo       = "training.grpo:main"
 srm-tokenizer  = "tokenizer.train_tokenizer:main"
 srm-shape      = "eval.shape_check:main"
+srm-eval       = "eval.harness:main"
+srm-benchmark  = "eval.benchmark:main"
+srm-serve      = "inference.serve:main"
 
 [build-system]
 requires = ["hatchling"]

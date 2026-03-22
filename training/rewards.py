@@ -26,8 +26,10 @@ These functions are called inside grpo.py's reward computation loop.
 All verification must be cheap and parallelizable.
 """
 
+import math
 import re
 import signal
+import types
 from contextlib import contextmanager
 from typing import Optional
 
@@ -194,8 +196,35 @@ def verify_code(
                 # for production use.
                 ns = {}
                 exec(code, ns)  # noqa: S102
-                # TODO: call the function with tc["input"] and compare to tc["expected_output"]
-                passed += 1  # placeholder
+
+                # Find the first callable defined by the generated code.
+                # ns starts empty so every key was placed there by exec —
+                # no risk of accidentally finding a builtin.  Skip module
+                # objects that exec occasionally leaks from import statements.
+                fn = None
+                for _name, _obj in ns.items():
+                    if callable(_obj) and not isinstance(_obj, types.ModuleType):
+                        fn = _obj
+                        break
+
+                if fn is None:
+                    # Code ran without error but defined no callable — fail.
+                    continue
+
+                # Call the function with the test-case input (single argument).
+                # If a problem needs multiple args, the dataset should store
+                # them as a tuple and the function should accept a tuple.
+                result = fn(tc["input"])
+
+                # Compare result to expected output.  Use math.isclose for
+                # floats to tolerate IEEE-754 rounding; exact equality otherwise.
+                expected = tc["expected_output"]
+                if isinstance(result, float) or isinstance(expected, float):
+                    if math.isclose(float(result), float(expected), rel_tol=1e-6):
+                        passed += 1
+                else:
+                    if result == expected:
+                        passed += 1
         except Exception:
             # Any exception (including our TimeoutError, SyntaxError, NameError, etc.)
             # counts as a test-case failure. We intentionally catch broadly here so that

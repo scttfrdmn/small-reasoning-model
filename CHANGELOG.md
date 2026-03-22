@@ -7,57 +7,68 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
-### Fixed
-- `training/pretrain.py` — fixed futex deadlock when training with real data:
-  `IterableDataset + num_workers=2 + pin_memory=True + CUDA` causes the main process
-  to block on a futex waiting for the pin_memory thread while DataLoader workers hold
-  the lock; manifested as 98% GPU + 100% CPU with zero logged steps for hours;
-  fixed by setting `num_workers=0, pin_memory=False` — data loading stays in the main
-  thread and does not compete with the CUDA allocator
-- `data/preprocess.py` — fixed `KeyError` when an inaccessible source is removed from
-  `MixedStreamSampler._generators` but `allowed_sources=None` allows it back through
-  `get_stage_mix()`; `stream()` now computes `effective_allowed` as the intersection
-  of `_generators.keys()` and `allowed_sources`, so dead sources disappear from future
-  stage-mix draws regardless of whether `--sources` was specified
-- `data/preprocess.py` — replaced gated code datasets (`the-stack-v2-train-smol-ids`,
-  `starcoderdata` — both require HuggingFace approval) with public
-  `codeparrot/github-code` (Python filter); same training objective
-  (code → structured-reasoning circuits), no token/approval required
-- `data/grpo_dataset.py` — corrected MATH dataset source from removed `lighteval/MATH`
-  to `EleutherAI/hendrycks_math`; updated loader to iterate across all 7 topic
-  sub-configs (algebra, counting_and_probability, geometry, intermediate_algebra,
-  number_theory, prealgebra, precalculus) since that repo requires a config name
-
 ### Added
-- `training/pretrain.py` — Apple MPS (Metal Performance Shaders) backend support for
-  local smoke testing on Apple Silicon; auto-detects MPS when CUDA is unavailable;
-  disables fused AdamW (CUDA-only); configures autocast with `device_type="mps"`
+- `inference/convert_gguf.py` — full GGUF export implementation: two-stage
+  strategy (BF16 GGUF via `gguf` Python package + external `llama-quantize`
+  for Q4_K_M/Q8_0); maps our weight names to llama.cpp conventions; writes
+  all llama-arch GGUF metadata including `rope_base=500000` (critical for
+  long-context inference); handles tied embeddings by writing `output.weight`
+  from the shared embedding; CLI: `uv run python inference/convert_gguf.py
+  --checkpoint best.pt --tokenizer tokenizer_output --config 500m --output model-bf16.gguf`
+- `eval/harness.py` — full lm_eval wrapper: implements `SmallReasoningLM`
+  registered as `"small_reasoning"` with all three required lm_eval methods
+  (`loglikelihood`, `loglikelihood_rolling`, `generate_until`); uses KV-cache
+  for efficient generation; left-pads batches for uniform loglikelihood
+  computation; greedy decoding with stop-string truncation for MATH/GSM8K
+- `eval/benchmark.py` — convenience benchmark runner: three suites (quick,
+  standard, full) covering arc_challenge, gsm8k, hellaswag, mmlu, hendrycks_math;
+  writes timestamped JSON to `results/`; computes `math_vs_hellaswag` ratio
+  to track GRPO improvement without commonsense regression
+- `inference/serve.py` — FastAPI inference server: `POST /generate` accepts
+  `{"prompt", "max_tokens", "temperature"}` and returns `{"text"}`; `GET /health`
+  liveness probe; KV-cache generation with greedy (`temperature=0`) and
+  multinomial sampling; model + tokenizer loaded once at startup via lifespan
+  context manager; CLI: `uv run srm-serve --checkpoint best.pt --config 500m
+  --tokenizer tokenizer_output --port 8080`
+- `pyproject.toml` — add `[inference]` optional dependency group with `gguf>=0.6`;
+  add `srm-eval`, `srm-benchmark`, and `srm-serve` CLI entry points
+- `docs/blog/12-self-improving-system.md` — blog post: "The Self-Improving System:
+  Alignment, Verification, and the Architecture That Builds Itself"
+- `docs/blog/11-structured-intent.md` — blog post: "The Real Use Case: Structured
+  Intent and Why Small Reasoning Models Matter"
+- `docs/SYSTEM_ARCHITECTURE.md` — design document: three-project ecosystem
+  (endless-v2 + structured-instruct + small-reasoning-model) as one system
+- `docs/blog/README.md` — added posts 11–12 to series index
+- `training/pretrain.py` — Apple MPS backend support for local smoke testing on
+  Apple Silicon; auto-detects MPS when CUDA is unavailable
 - `data/preprocess.py` — full implementation of pre-training data pipeline:
-  streaming download from HuggingFace (FineWeb-Edu, OpenWebMath, Wikipedia,
-  NuminaMath-TIR, The Stack v2 smol); heuristic quality filter (length, word count,
-  non-ASCII ratio) as practical substitute for GPT-2 perplexity scoring; SHA-256
-  exact dedup; `MixedStreamSampler` for three-stage curriculum mixing with
-  configurable per-stage proportions; outputs `train.jsonl` + `manifest.json`
-- `data/sft_format.py` — full implementation of SFT dataset downloader and reformatter:
-  downloads NuminaMath-CoT, OpenHermes-2.5, CodeFeedback, and Orca-Math via HuggingFace
-  streaming; wraps existing CoT solutions in `<think>` tags or applies the minimal
-  `<think>\nLet me work through this.\n{answer}\n</think>\n{answer}` template for
-  direct-QA sources; filters prompts >512 tokens and empty responses; writes
-  `sft_train.jsonl` / `sft_val.jsonl` (95/5 split) and `manifest.json`
-- `data/grpo_dataset.py` — full implementation of GRPO verifiable problem dataset builder:
-  downloads MATH (Hendrycks), GSM8K, NuminaMath-TIR, and LogiQA; extracts
-  ground-truth answers (`\boxed{}` extraction, `####` GSM8K parsing, option-text for
-  logic); writes `grpo_raw.jsonl` with `pass_rate: null`; implements
-  `filter_by_difficulty()` that loads an SFT checkpoint, generates G=8 completions per
-  problem, measures pass_rate, and keeps only the 20–80% difficulty window
+  streaming HuggingFace download, heuristic quality filter, SHA-256 dedup,
+  `MixedStreamSampler` for three-stage curriculum mixing; outputs `train.jsonl`
+- `data/sft_format.py` — full implementation of SFT dataset formatter:
+  NuminaMath-CoT, OpenHermes-2.5, CodeFeedback, Orca-Math; wraps CoT in
+  `<think>` tags; writes `sft_train.jsonl` / `sft_val.jsonl` (95/5 split)
+- `data/grpo_dataset.py` — full implementation of GRPO verifiable problem set:
+  MATH (Hendrycks), GSM8K, NuminaMath-TIR, LogiQA; `filter_by_difficulty()`
+  keeps only 20–80% pass-rate problems for GRPO training signal
 
-### Planned
-- Phase 0 pre-training run on RTX 5090 (500M validation)
-- Phase 0 full run on AWS Trn2 (1B primary experiment)
-- NKI attention kernel for Trainium2 (`model/nki_attention.py`)
-- lm-evaluation-harness integration (`eval/harness.py`)
-- GGUF export for llama.cpp (`inference/convert_gguf.py`)
-- Inference server (`inference/serve.py`)
+### Fixed
+- `training/rewards.py` — fix `code_execution_reward()` placeholder: after
+  `exec(code, ns)`, find the first callable in `ns`, call it with `tc["input"]`,
+  compare return value to `tc["expected_output"]` with exact match or
+  `math.isclose` for floats; previously `passed += 1` unconditionally granted
+  credit regardless of whether the function returned the correct answer
+- `training/grpo.py` — remove duplicate prefill call in `generate_completions()`;
+  first call's result was immediately discarded before a second identical call;
+  removing it halves prefill compute cost for every GRPO generation step
+- `training/pretrain.py` — fix futex deadlock: `IterableDataset + num_workers=2
+  + pin_memory=True + CUDA` caused main process to block on a futex; fixed by
+  setting `num_workers=0, pin_memory=False`
+- `data/preprocess.py` — fix `KeyError` when dead source re-enters stage mix;
+  `stream()` now intersects `_generators.keys()` with `allowed_sources`
+- `data/preprocess.py` — replace gated code datasets (`the-stack-v2-train-smol-ids`,
+  `starcoderdata`) with public `codeparrot/github-code` (Python filter)
+- `data/grpo_dataset.py` — fix MATH dataset source: `lighteval/MATH` removed;
+  use `EleutherAI/hendrycks_math` with all 7 sub-configs
 
 ---
 
@@ -121,5 +132,5 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - `LICENSE` — Apache 2.0, Copyright 2026 Scott Friedman
 - `README.md`, `CHANGELOG.md`, and `docs/` documentation
 
-[Unreleased]: https://github.com/scottfriedman/small-reasoning-model/compare/v0.1.0...HEAD
-[0.1.0]: https://github.com/scottfriedman/small-reasoning-model/releases/tag/v0.1.0
+[Unreleased]: https://github.com/scttfrdmn/small-reasoning-model/compare/v0.1.0...HEAD
+[0.1.0]: https://github.com/scttfrdmn/small-reasoning-model/releases/tag/v0.1.0

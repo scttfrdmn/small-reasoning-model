@@ -53,14 +53,37 @@ Trainium2 efficiency and breaks quantization layouts:
 
 ## Project Tracking and Status
 
-- **Current status and open tasks**: see `CHANGELOG.md` → `[Unreleased]` → `Planned`
+Work is tracked in GitHub — **do not create status files, TODO lists, or
+work-in-progress notes anywhere in the repository.**
+
+- **Issues / tasks**: https://github.com/scttfrdmn/small-reasoning-model/issues
+- **Project board**: https://github.com/users/scttfrdmn/projects/39
+- **Milestones**: Phase 0 (Pre-training) → Phase 1 (SFT) → Phase 2 (GRPO) → v0.2 (Deployment)
 - **Specification and design decisions**: `small-reasoning-model-spec.md`
 - **Hardware and cost planning**: `docs/hardware.md`
 - **Architecture rationale**: `docs/architecture.md`
 - **Training recipe details**: `docs/training.md`
 
-Do not add task lists, status notes, or work-in-progress tracking to this file.
-Those belong in `CHANGELOG.md` (planned work) or the docs/ files (reference material).
+### When to create or update GitHub issues
+
+- **New bug found** → open an issue with the `bug` label; include reproduction steps
+- **New planned work** → open an issue with appropriate phase + domain labels;
+  assign to the correct milestone
+- **Work completed** → close the issue (do not leave it open as a "done" marker)
+- **Work blocked** → add the `blocked` label and note what it's waiting on in a comment
+
+### Labels
+
+Domain: `model` `training` `data` `eval` `inference` `infrastructure`
+Phase: `phase-0` `phase-1` `phase-2`
+Status: `bug` `enhancement` `blocked`
+
+### Do not
+
+- Add task lists or `## TODO` sections to source files
+- Create `STATUS.md`, `TASKS.md`, `PLAN.md`, or similar tracking files
+- Use `CHANGELOG.md → Planned` for new work (GitHub issues are the canonical backlog)
+- Leave "TODO: implement X" stubs without a corresponding open issue
 
 ---
 

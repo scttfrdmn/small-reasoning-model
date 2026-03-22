@@ -1175,8 +1175,7 @@ def generate_completions(
             dtype=dtype,
             enabled=(dtype == torch.bfloat16),
         ):
-            logits, kv_caches = model(batch, kv_caches=None)
-            logits, kv_caches = model(batch)  # (G, T_p, V)
+            logits, kv_caches = model(batch)  # (G, T_p, V) — single prefill pass
         next_logits = logits[:, -1, :]  # (G, V) — logits for first new token
         pos_offset = T_p  # KV cache covers positions 0..T_p-1; next token is at T_p
 

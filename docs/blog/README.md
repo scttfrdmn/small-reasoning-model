@@ -10,6 +10,14 @@ cheap, deployable on hardware you own — and with proper reasoning training, th
 punch above their weight on structured problem domains. This series is about
 building one that actually reasons.
 
+**The unifying principle:** Alignment — not in the RLHF sense, but in the
+engineering sense. Efficiency and reliability come from removing friction between
+your system and its constraints. This shows up at every level: hardware dimensions
+that match tensor core tiles, training formats that match inference formats, reward
+signals that match actual objectives, model outputs that match human intent. The
+series is an exercise in identifying those gaps and closing them deliberately,
+from silicon up.
+
 **Hardware:** RTX 5090 (primary training), RTX 4070 Ti SUPER (mid-range reference),
 2× Titan RTX NVLink (multi-GPU), 2× DGX Sparks GB10 (linked, 256GB unified),
 4× Jetson Orin NX (edge, NVDLA). Cloud (Trainium2, etc.) as excursions.
@@ -37,6 +45,8 @@ wrong about, and what broke before it worked.
 | 8 | [Phase 2 GRPO: Reinforcement Learning With Verifiable Rewards](08-grpo.md) | ✅ Written | GRPO algorithm, verifiable rewards, RL stability |
 | 9 | [Inference at the Edge: GGUF, Quantization, and the Full Fleet](09-inference.md) | ✅ Written | GGUF format, quantization theory, hardware deployment |
 | 10 | [What Determines Context Length? A Systems-Level Explanation](10-context-length.md) | ✅ Written | KV cache, O(T²) attention, RoPE extrapolation, per-hardware analysis |
+| 11 | [The Real Use Case: Structured Intent and Why Small Reasoning Models Matter](11-structured-intent.md) | ✅ Written | SI pipeline, format alignment, si-go-v1 results, hardware deployment |
+| 12 | [The Self-Improving System: Alignment, Verification, and the Architecture That Builds Itself](12-self-improving-system.md) | ✅ Written | Corrected architecture (reasoning model inside endless), "?" target, self-improvement dynamics, merge/splinter/refactor, bootstrap |
 
 ---
 

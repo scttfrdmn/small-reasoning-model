@@ -212,6 +212,46 @@ Edge             →  Jetson Orin NX (Q4 + NVDLA, embedded)
 
 ---
 
+## The Unifying Principle: Alignment at Every Level
+
+Before the design principles, one idea that runs through all of them.
+
+The word "alignment" gets used in ML to mean one specific thing: making models
+do what humans want. That's a real problem. But in this project, alignment
+shows up at every level of the stack, and it means the same thing at all of them:
+**removing friction between your system and its constraints**.
+
+**Hardware alignment.** Model dimensions that are multiples of 128 map cleanly
+onto tensor core tiles, GGUF quantization blocks, and NVDLA INT8 processing
+chunks. Misalignment doesn't cause failure — it causes waste. Boundary tiles get
+padded. Some operations fall through to scalar fallback paths. The hardware is
+there; you're either using it fully or not.
+
+**Format alignment.** A model trained on structured specifications as input and
+compilable Go code as output learns that transformation. A frontier model trained
+on everything learns something more general and less precise. Specialization is
+a form of alignment: your training distribution matches your deployment
+distribution, and the model has no capacity wasted on tasks it will never be
+asked to do. This is why a 7B specialized model beats a trillion-parameter
+general model at its specific task.
+
+**Intent alignment.** The whole point of the Structured Intent pipeline (Post 11)
+is that human intent and model output are usually misaligned — not because the
+model is bad, but because the interface between them is lossy. Structured
+specifications reduce that loss. Verification closes it further.
+
+**Training signal alignment.** GRPO uses verifiable rewards because noisy reward
+signals produce noisy learning. If the reward is "does this code pass its tests,"
+the model can learn what "correct" means. If the reward is "does a human think
+this looks good," the gradient is pointing somewhere less precise. The reward
+signal has to be aligned with the actual objective.
+
+In each case: efficiency and reliability come from reducing the gap between what
+you have and what you need. The project is an exercise in identifying those gaps
+at every level — silicon, format, intent, reward — and closing them deliberately.
+
+---
+
 ## Design Principles
 
 These constrain every decision in the project.
