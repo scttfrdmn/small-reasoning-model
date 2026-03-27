@@ -534,7 +534,7 @@ def filter_by_difficulty(
       pass_rate_max:   Upper bound of the difficulty window (default 0.80).
     """
     import torch
-    from rewards import compute_reward, _extract_answer
+    from training.rewards import compute_reward, _extract_answer
 
     # Import the model architecture from the project package.
     # training/grpo.py uses the same pattern.

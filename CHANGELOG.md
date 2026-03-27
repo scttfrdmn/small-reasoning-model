@@ -68,6 +68,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   NuminaMath-TIR, LogiQA; `filter_by_difficulty()` keeps 20–80% pass-rate window
 
 ### Fixed
+- `eval/harness.py` — fix `lm_eval.simple_evaluate` import: function lives in
+  `lm_eval.evaluator.simple_evaluate` in lm_eval 0.4.x, not at the top-level module
+- `eval/benchmark.py` — same fix: `from lm_eval.evaluator import simple_evaluate`
+- `data/grpo_dataset.py` — fix `from rewards import ...` to `from training.rewards import ...`
+  (bare module import fails when running from project root via `uv run`)
 - `model/architecture.py` — add missing `get_config(name)` helper function;
   `inference/convert_gguf.py`, `inference/serve.py`, and `eval/harness.py` all
   imported it but it was never defined — would ImportError on first use

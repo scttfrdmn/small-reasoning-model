@@ -78,8 +78,7 @@ def run(
     # Import here so a missing lm_eval gives a clear error at runtime, not
     # at import time (the eval extras may not be installed).
     try:
-        import lm_eval
-        import lm_eval.simple_evaluate
+        from lm_eval.evaluator import simple_evaluate  # lm_eval 0.4.x API
 
         # Importing harness registers the "small_reasoning" model class
         import eval.harness  # noqa: F401
@@ -103,7 +102,7 @@ def run(
         print(f"Task: {task_name}  ({num_fewshot}-shot)")
         print("=" * 60)
         try:
-            result = lm_eval.simple_evaluate(
+            result = simple_evaluate(
                 model="small_reasoning",
                 model_args=model_args,
                 tasks=[task_name],

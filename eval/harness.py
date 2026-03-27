@@ -34,7 +34,7 @@ try:
     import lm_eval.api.model
     import lm_eval.api.registry
     import lm_eval.api.instance
-    import lm_eval.simple_evaluate
+    from lm_eval.evaluator import simple_evaluate  # lm_eval 0.4.x API
 except ImportError:
     sys.exit(
         "ERROR: lm-eval not found.\n"
@@ -175,8 +175,9 @@ class SmallReasoningLM(lm_eval.api.model.LM):
             dtype=self._dtype,
             enabled=(self._dtype == torch.bfloat16),
         ):
-            # SmallReasoningModel.forward returns logits (B, T, V)
-            logits = self._model(input_ids)
+            # SmallReasoningModel.forward returns (logits, kv_caches) — unpack.
+            # For loglikelihood we only need logits; no KV cache is maintained.
+            logits, _kv = self._model(input_ids)
         return F.log_softmax(logits.float(), dim=-1)
 
     # ------------------------------------------------------------------
@@ -345,8 +346,9 @@ class SmallReasoningLM(lm_eval.api.model.LM):
             # Prefill: process entire context in one shot to build KV cache
             logits, kv_caches = self._model(input_ids)  # (1, T_ctx, V)
             next_logits = logits[0, -1, :]  # (V,)
+            position_offset = len(ctx_ids)  # RoPE position for next generated token
 
-            for _ in range(max_new_tokens):
+            for step_i in range(max_new_tokens):
                 # Greedy: pick the most probable token
                 next_id = int(next_logits.argmax(dim=-1).item())
                 generated_ids.append(next_id)
@@ -354,11 +356,17 @@ class SmallReasoningLM(lm_eval.api.model.LM):
                 if next_id == self._eos_id:
                     break
 
-                # Decode step: extend with single new token
+                # Decode step: extend with single new token.
+                # position_offset ensures RoPE assigns the correct absolute position
+                # to each generated token rather than always treating it as position 0.
                 next_input = torch.tensor(
                     [[next_id]], dtype=torch.long, device=self._device
                 )
-                logits, kv_caches = self._model(next_input, kv_caches=kv_caches)
+                logits, kv_caches = self._model(
+                    next_input,
+                    kv_caches=kv_caches,
+                    position_offset=position_offset + step_i,
+                )
                 next_logits = logits[0, -1, :]
 
         generated_text = self.tok_decode(generated_ids)
@@ -447,7 +455,7 @@ def main() -> None:
     if args.device:
         model_args += f",device={args.device}"
 
-    results = lm_eval.simple_evaluate(
+    results = simple_evaluate(
         model="small_reasoning",
         model_args=model_args,
         tasks=args.tasks.split(","),
