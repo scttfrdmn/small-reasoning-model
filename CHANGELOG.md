@@ -73,6 +73,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - `eval/benchmark.py` — same fix: `from lm_eval.evaluator import simple_evaluate`
 - `data/grpo_dataset.py` — fix `from rewards import ...` to `from training.rewards import ...`
   (bare module import fails when running from project root via `uv run`)
+- `data/grpo_dataset.py` — fix `filter_by_difficulty()` generation loop: replaced HuggingFace
+  `model.generate()` call (SmallReasoningModel has no .generate()) with manual KV-cache
+  autoregressive loop matching the pattern in inference/serve.py; also fixed indentation
+  bug where decode/reward computation was outside the group_size loop
 - `data/grpo_dataset.py` — fix tokenizer path inference in `filter_by_difficulty()`: was
   walking two dirs up from checkpoint which produced `checkpoints/tokenizer_output` (doesn't
   exist); now checks CWD `tokenizer_output/` first (project root convention), then falls back;

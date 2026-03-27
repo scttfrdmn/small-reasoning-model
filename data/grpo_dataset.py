@@ -613,40 +613,53 @@ def filter_by_difficulty(
 
             with torch.no_grad():
                 for _ in range(group_size):
-                    # Generate one completion per iteration.
-                    # do_sample=True with temperature=1.0 gives diverse outputs.
-                    output_ids = model.generate(
-                        input_ids,
-                        max_new_tokens=MAX_GEN_TOKENS,
-                        do_sample=True,
-                        temperature=1.0,
-                        # Suppress the pad token in generation if defined —
-                        # some tokenizers set pad_token == eos_token which can
-                        # cause early stopping issues.
-                        pad_token_id=(
-                            tokenizer.eos_token_id if tokenizer.pad_token_id is None else None
-                        ),
+                    # Generate one completion using our KV-cache autoregressive loop.
+                    # SmallReasoningModel.forward() returns (logits, kv_caches) —
+                    # not a HuggingFace model, so no .generate() method.
+                    #
+                    # Prefill: single forward pass over the full prompt.
+                    logits, kv_caches = model(input_ids)
+                    generated: list[int] = []
+                    prompt_len = input_ids.shape[1]
+
+                    for step_i in range(MAX_GEN_TOKENS):
+                        # Temperature=1.0: sample from the unscaled distribution
+                        # for diverse completions (needed for pass_rate estimation).
+                        next_logits = logits[0, -1, :].float()
+                        probs = torch.softmax(next_logits, dim=-1)
+                        next_id = int(torch.multinomial(probs, num_samples=1).item())
+                        generated.append(next_id)
+
+                        # Stop on EOS
+                        eos_id = tokenizer.eos_token_id or 2
+                        if next_id == eos_id:
+                            break
+
+                        # Decode step: one new token, reuse KV cache.
+                        next_input = torch.tensor([[next_id]], dtype=torch.long, device=device)
+                        logits, kv_caches = model(
+                            next_input,
+                            kv_caches=kv_caches,
+                            position_offset=prompt_len + step_i,
+                        )
+
+                    completion = tokenizer.decode(generated, skip_special_tokens=True)
+
+                    # Compute reward using the domain-appropriate verifier.
+                    # We pass format_weight=0.0 because we only care about answer
+                    # correctness for difficulty estimation — format reward is not
+                    # meaningful for pass_rate calculation.
+                    reward = compute_reward(
+                        response=completion,
+                        ground_truth=ground_truth,
+                        domain=domain,
+                        format_weight=0.0,
                     )
-
-                # Decode only the newly generated tokens (not the prompt).
-                new_tokens = output_ids[0, input_ids.shape[1] :]
-                completion = tokenizer.decode(new_tokens, skip_special_tokens=True)
-
-                # Compute reward using the domain-appropriate verifier.
-                # We pass format_weight=0.0 here because we only care about
-                # answer correctness for difficulty estimation — format reward
-                # is not meaningful for pass_rate calculation.
-                reward = compute_reward(
-                    response=completion,
-                    ground_truth=ground_truth,
-                    domain=domain,
-                    format_weight=0.0,
-                )
-                if reward >= 0.5:
-                    # Threshold at 0.5: for binary rewards (math/logic) this is
-                    # exact; for code (fractional) it means at least half the
-                    # test cases pass.
-                    correct += 1
+                    if reward >= 0.5:
+                        # Threshold at 0.5: for binary rewards (math/logic) this is
+                        # exact; for code (fractional) it means at least half the
+                        # test cases pass.
+                        correct += 1
 
             pass_rate = correct / group_size
 
