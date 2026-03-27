@@ -68,6 +68,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   NuminaMath-TIR, LogiQA; `filter_by_difficulty()` keeps 20–80% pass-rate window
 
 ### Fixed
+- `model/architecture.py` — add missing `get_config(name)` helper function;
+  `inference/convert_gguf.py`, `inference/serve.py`, and `eval/harness.py` all
+  imported it but it was never defined — would ImportError on first use
+- `model/__init__.py` — export `get_config` alongside existing model exports
 - `training/grpo.py` — critical KV cache bug: decode loop discarded updated
   `kv_caches` with `_` every step; each token was decoded with no context.
   Fixed to thread cache correctly through every decode step.

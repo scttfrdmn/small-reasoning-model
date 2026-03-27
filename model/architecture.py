@@ -298,6 +298,13 @@ CONFIGS = {
 }
 
 
+def get_config(name: str) -> ModelConfig:
+    """Return a ModelConfig by name ('500m', '1b', '3b'). Raises KeyError on unknown names."""
+    if name not in CONFIGS:
+        raise KeyError(f"Unknown config '{name}'. Valid options: {list(CONFIGS.keys())}")
+    return CONFIGS[name]
+
+
 # ---------------------------------------------------------------------------
 # RMSNorm
 # ---------------------------------------------------------------------------
