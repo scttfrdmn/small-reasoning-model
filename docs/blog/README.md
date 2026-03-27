@@ -47,6 +47,7 @@ wrong about, and what broke before it worked.
 | 10 | [What Determines Context Length? A Systems-Level Explanation](10-context-length.md) | ✅ Written | KV cache, O(T²) attention, RoPE extrapolation, per-hardware analysis |
 | 11 | [The Real Use Case: Structured Intent and Why Small Reasoning Models Matter](11-structured-intent.md) | ✅ Written | SI pipeline, format alignment, si-go-v1 results, hardware deployment |
 | 12 | [The Self-Improving System: Alignment, Verification, and the Architecture That Builds Itself](12-self-improving-system.md) | ✅ Written | Corrected architecture (reasoning model inside endless), "?" target, self-improvement dynamics, merge/splinter/refactor, bootstrap |
+| 13 | [Compressing the KV Cache: TurboQuant and the Memory Wall](13-kv-cache-compression.md) | ✅ Written | PolarQuant algorithm, unit vector insight, memory analysis per phase, GRPO budget, Graviton4/Kamrui deployment |
 
 ---
 

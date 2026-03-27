@@ -54,7 +54,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   Intent and Why Small Reasoning Models Matter"
 - `docs/SYSTEM_ARCHITECTURE.md` — design document: three-project ecosystem
   (endless-v2 + structured-instruct + small-reasoning-model) as one system
-- `docs/blog/README.md` — added posts 11–12 to series index
+- `docs/blog/13-kv-cache-compression.md` — blog post: "Compressing the KV Cache:
+  TurboQuant and the Memory Wall": PolarQuant algorithm, unit vector insight
+  (no per-block normalization constants), head_dim=128 error bounds, phase-by-phase
+  impact table, implementation details, Stage 2 QJL limitations, verification output
+- `docs/blog/README.md` — added posts 11–13 to series index
 - `training/pretrain.py` — Apple MPS backend support for local smoke testing
 - `data/preprocess.py` — full pre-training data pipeline: streaming HuggingFace
   download, quality filter, SHA-256 dedup, `MixedStreamSampler` curriculum mixing
