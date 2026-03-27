@@ -495,6 +495,7 @@ def filter_by_difficulty(
     group_size: int = FILTER_GROUP_SIZE,
     pass_rate_min: float = PASS_RATE_MIN,
     pass_rate_max: float = PASS_RATE_MAX,
+    tokenizer_path: Optional[str] = None,
 ) -> None:
     """
     Run the SFT model on each problem, estimate pass_rate, and write the
@@ -564,18 +565,20 @@ def filter_by_difficulty(
     model = model.to(device)
 
     # Load the tokenizer. We expect a HuggingFace-compatible tokenizer saved
-    # alongside or derivable from the checkpoint. The tokenizer output directory
-    # is a project convention (see tokenizer/train_tokenizer.py).
+    # by srm-tokenizer (tokenizer/train_tokenizer.py). Resolution order:
+    #   1. Explicit --tokenizer path (if provided)
+    #   2. tokenizer_output/ relative to CWD (project root convention)
+    #   3. tokenizer_output/ relative to checkpoint directory
     try:
         from transformers import PreTrainedTokenizerFast
 
-        # Infer tokenizer path from checkpoint location: look for tokenizer_output/
-        # relative to the project root, which is the default output of srm-tokenizer.
-        tokenizer_dir = os.path.join(
-            os.path.dirname(os.path.dirname(checkpoint_path)), "tokenizer_output"
-        )
-        if not os.path.isdir(tokenizer_dir):
-            # Fall back to a tokenizer_output/ dir next to the checkpoint.
+        if tokenizer_path and os.path.isdir(tokenizer_path):
+            tokenizer_dir = tokenizer_path
+        elif os.path.isdir("tokenizer_output"):
+            # Most common case: running from project root
+            tokenizer_dir = "tokenizer_output"
+        else:
+            # Last resort: look next to the checkpoint
             tokenizer_dir = os.path.join(os.path.dirname(checkpoint_path), "tokenizer_output")
         tokenizer = PreTrainedTokenizerFast.from_pretrained(tokenizer_dir)
         print(f"Tokenizer loaded from {tokenizer_dir}", flush=True)
@@ -744,6 +747,12 @@ Examples:
         help="Output path for grpo_filtered.jsonl (filter mode).",
     )
     parser.add_argument(
+        "--tokenizer",
+        type=str,
+        default=None,
+        help="Path to tokenizer directory (filter mode). Default: auto-detect tokenizer_output/.",
+    )
+    parser.add_argument(
         "--group_size",
         type=int,
         default=FILTER_GROUP_SIZE,
@@ -792,6 +801,7 @@ def main() -> None:
             group_size=args.group_size,
             pass_rate_min=args.pass_rate_min,
             pass_rate_max=args.pass_rate_max,
+            tokenizer_path=args.tokenizer,
         )
 
     else:
