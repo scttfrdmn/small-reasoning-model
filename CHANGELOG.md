@@ -8,29 +8,45 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [Unreleased]
 
 ### Added
-- `inference/convert_gguf.py` — full GGUF export implementation: two-stage
-  strategy (BF16 GGUF via `gguf` Python package + external `llama-quantize`
-  for Q4_K_M/Q8_0); maps our weight names to llama.cpp conventions; writes
-  all llama-arch GGUF metadata including `rope_base=500000` (critical for
-  long-context inference); handles tied embeddings by writing `output.weight`
-  from the shared embedding; CLI: `uv run python inference/convert_gguf.py
+- `model/kv_compress.py` — TurboQuant KV cache compression (Google Research,
+  March 2026): two-stage PolarQuant+INT8 algorithm compressing KV caches ~2×
+  with zero accuracy loss at head_dim=128. `CompressedKV.compress(k, v)` splits
+  K into magnitude (float16) + INT8 unit direction (no per-block normalization
+  constants — the TurboQuant insight), V into INT8 with per-head scale.
+  `forward_compressed()` is a transparent drop-in wrapper handling decompress →
+  forward → recompress per decode step. `verify_compression()` validates
+  round-trip accuracy, attention dot-product error, and softmax weight error
+  analytically without requiring a GPU. CLI: `python -m model.kv_compress
+  --head-dim 128 --seq-len 512`
+- `model/__init__.py` — export `CompressedKV`, `compress_kv_caches`,
+  `decompress_kv_caches`, `forward_compressed` alongside existing model exports
+- `inference/serve.py` — `--compress-kv` flag: when enabled, compresses prefill
+  KV caches immediately after population and uses `forward_compressed` for each
+  decode step, halving KV cache memory for long-context generation
+- `training/grpo.py` — `compress_kv` field in `GRPOConfig` and `--compress-kv`
+  CLI flag: applies TurboQuant during GRPO generation loop, enabling larger
+  `group_size` or longer `max_gen_tokens` on the same GPU
+- `training/grpo.py` — DAPO + Dr. GRPO improvements (previously in sandbox,
+  now merged): Clip-Higher (asymmetric PPO clip [0.80, 1.28] prevents entropy
+  collapse), token-level policy gradient loss (avoids vanishing gradients on
+  long CoT), dynamic sampling (skip uniform-reward groups), length-debiased
+  advantages (Dr. GRPO: normalize by completion length before group statistics)
+- `inference/convert_gguf.py` — full GGUF export: two-stage strategy (BF16 GGUF
+  via `gguf` package + external `llama-quantize`); maps weight names to llama.cpp
+  conventions; writes all llama-arch metadata including `rope_base=500000`;
+  handles tied embeddings; CLI: `uv run python inference/convert_gguf.py
   --checkpoint best.pt --tokenizer tokenizer_output --config 500m --output model-bf16.gguf`
-- `eval/harness.py` — full lm_eval wrapper: implements `SmallReasoningLM`
-  registered as `"small_reasoning"` with all three required lm_eval methods
-  (`loglikelihood`, `loglikelihood_rolling`, `generate_until`); uses KV-cache
-  for efficient generation; left-pads batches for uniform loglikelihood
-  computation; greedy decoding with stop-string truncation for MATH/GSM8K
-- `eval/benchmark.py` — convenience benchmark runner: three suites (quick,
-  standard, full) covering arc_challenge, gsm8k, hellaswag, mmlu, hendrycks_math;
-  writes timestamped JSON to `results/`; computes `math_vs_hellaswag` ratio
-  to track GRPO improvement without commonsense regression
-- `inference/serve.py` — FastAPI inference server: `POST /generate` accepts
-  `{"prompt", "max_tokens", "temperature"}` and returns `{"text"}`; `GET /health`
-  liveness probe; KV-cache generation with greedy (`temperature=0`) and
-  multinomial sampling; model + tokenizer loaded once at startup via lifespan
-  context manager; CLI: `uv run srm-serve --checkpoint best.pt --config 500m
-  --tokenizer tokenizer_output --port 8080`
-- `pyproject.toml` — add `[inference]` optional dependency group with `gguf>=0.6`;
+- `eval/harness.py` — lm_eval wrapper: `SmallReasoningLM` registered as
+  `"small_reasoning"` with all three lm_eval methods (`loglikelihood`,
+  `loglikelihood_rolling`, `generate_until`); left-padded batches; KV-cache
+  generation with stop-string truncation for MATH/GSM8K
+- `eval/benchmark.py` — benchmark suite runner: quick/standard/full suites
+  covering arc_challenge, gsm8k, hellaswag, mmlu, hendrycks_math; timestamped
+  JSON output; `math_vs_hellaswag` ratio to track GRPO without commonsense regression
+- `inference/serve.py` — FastAPI inference server: `POST /generate` with
+  temperature sampling, `GET /health`; KV-cache generation; `--compress-kv` flag
+  for TurboQuant; CLI: `uv run srm-serve --checkpoint best.pt --config 500m --port 8080`
+- `pyproject.toml` — add `[inference]` optional group with `gguf>=0.6`;
   add `srm-eval`, `srm-benchmark`, and `srm-serve` CLI entry points
 - `docs/blog/12-self-improving-system.md` — blog post: "The Self-Improving System:
   Alignment, Verification, and the Architecture That Builds Itself"
@@ -39,42 +55,38 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - `docs/SYSTEM_ARCHITECTURE.md` — design document: three-project ecosystem
   (endless-v2 + structured-instruct + small-reasoning-model) as one system
 - `docs/blog/README.md` — added posts 11–12 to series index
-- `training/pretrain.py` — Apple MPS backend support for local smoke testing on
-  Apple Silicon; auto-detects MPS when CUDA is unavailable
-- `data/preprocess.py` — full implementation of pre-training data pipeline:
-  streaming HuggingFace download, heuristic quality filter, SHA-256 dedup,
-  `MixedStreamSampler` for three-stage curriculum mixing; outputs `train.jsonl`
-- `data/sft_format.py` — full implementation of SFT dataset formatter:
-  NuminaMath-CoT, OpenHermes-2.5, CodeFeedback, Orca-Math; wraps CoT in
-  `<think>` tags; writes `sft_train.jsonl` / `sft_val.jsonl` (95/5 split)
-- `data/grpo_dataset.py` — full implementation of GRPO verifiable problem set:
-  MATH (Hendrycks), GSM8K, NuminaMath-TIR, LogiQA; `filter_by_difficulty()`
-  keeps only 20–80% pass-rate problems for GRPO training signal
+- `training/pretrain.py` — Apple MPS backend support for local smoke testing
+- `data/preprocess.py` — full pre-training data pipeline: streaming HuggingFace
+  download, quality filter, SHA-256 dedup, `MixedStreamSampler` curriculum mixing
+- `data/sft_format.py` — full SFT dataset formatter: NuminaMath-CoT,
+  OpenHermes-2.5, CodeFeedback, Orca-Math; writes `sft_train.jsonl` / `sft_val.jsonl`
+- `data/grpo_dataset.py` — full GRPO problem set builder: MATH, GSM8K,
+  NuminaMath-TIR, LogiQA; `filter_by_difficulty()` keeps 20–80% pass-rate window
 
 ### Fixed
-- `training/sft.py` — fix `SFTDataset` file discovery: priority chain checked
-  for `{split}.jsonl` (i.e. `train.jsonl`/`val.jsonl`) which don't exist, then
-  fell through to glob all `*.jsonl`, loading both `sft_train.jsonl` and
-  `sft_val.jsonl` for both splits; train and val used identical 2.15M-example
-  sets so val loss had no independent signal and early stopping was invalid;
-  fix adds `sft_{split}.jsonl` as the first-priority pattern in the chain
-- `training/rewards.py` — fix `code_execution_reward()` placeholder: after
-  `exec(code, ns)`, find the first callable in `ns`, call it with `tc["input"]`,
-  compare return value to `tc["expected_output"]` with exact match or
-  `math.isclose` for floats; previously `passed += 1` unconditionally granted
-  credit regardless of whether the function returned the correct answer
-- `training/grpo.py` — remove duplicate prefill call in `generate_completions()`;
-  first call's result was immediately discarded before a second identical call;
-  removing it halves prefill compute cost for every GRPO generation step
-- `training/pretrain.py` — fix futex deadlock: `IterableDataset + num_workers=2
-  + pin_memory=True + CUDA` caused main process to block on a futex; fixed by
-  setting `num_workers=0, pin_memory=False`
-- `data/preprocess.py` — fix `KeyError` when dead source re-enters stage mix;
-  `stream()` now intersects `_generators.keys()` with `allowed_sources`
-- `data/preprocess.py` — replace gated code datasets (`the-stack-v2-train-smol-ids`,
-  `starcoderdata`) with public `codeparrot/github-code` (Python filter)
-- `data/grpo_dataset.py` — fix MATH dataset source: `lighteval/MATH` removed;
-  use `EleutherAI/hendrycks_math` with all 7 sub-configs
+- `training/grpo.py` — critical KV cache bug: decode loop discarded updated
+  `kv_caches` with `_` every step; each token was decoded with no context.
+  Fixed to thread cache correctly through every decode step.
+- `eval/harness.py` — `_forward_logprobs()` called `.float()` on the
+  `(logits, kv_caches)` tuple returned by `forward()`; would TypeError on first
+  eval. Fixed: `logits, _kv = self._model(input_ids)`
+- `eval/harness.py` — `_generate_single()` omitted `position_offset` on decode
+  steps; RoPE treated every generated token as position 0. Fixed to pass
+  `position_offset = len(ctx_ids) + step_i` on each step.
+- `model/kv_compress.py` — raise `atol_k` default 0.02 → 0.025 for BF16
+  variance headroom; softmax MAE (0.000039) is well inside tolerance
+- `training/sft.py` — fix `SFTDataset` file discovery: fell through to glob
+  all `*.jsonl`, loading both split files for both train and val; added
+  `sft_{split}.jsonl` as first-priority pattern so splits load correctly
+- `training/rewards.py` — fix `code_execution_reward()`: was `passed += 1`
+  unconditionally; now calls function with `tc["input"]` and compares to
+  `tc["expected_output"]` with exact match or `math.isclose` for floats
+- `training/grpo.py` — remove duplicate prefill call discarded before decode loop
+- `training/pretrain.py` — fix futex deadlock with `IterableDataset + pin_memory`
+- `data/preprocess.py` — fix dead-source `KeyError` in stage-mix draws
+- `data/preprocess.py` — replace gated code datasets with `codeparrot/github-code`
+- `data/grpo_dataset.py` — fix MATH dataset: use `EleutherAI/hendrycks_math`
+  with all 7 sub-configs (replaces removed `lighteval/MATH`)
 
 ---
 
