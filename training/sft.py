@@ -784,31 +784,37 @@ def sft_loss(logits: torch.Tensor, labels: torch.Tensor) -> torch.Tensor:
     labels: (B, T)             — token IDs for positions we train on,
                                  LOSS_IGNORE (-100) elsewhere
 
-    WHY NOT SHIFT HERE?
-    ───────────────────
-    The labels tensor is already aligned with input_ids (not shifted by 1).
-    The model's forward pass produces logits[t] as a prediction for
-    token[t+1] (causal language model convention). Because of how the
-    tokenizer and dataset align things, labels[t] == the target for
-    logits[t] — i.e. the shift is baked into how the dataset was built.
-    Shifting here again would be a double-shift bug.
+    THE SHIFT
+    ─────────
+    The model's forward pass is a causal LM: logits[t] is the predicted
+    distribution over the token at position t+1 (next-token prediction).
+    So logits[:, t, :] should be trained against labels[:, t+1].
+
+    We apply this shift explicitly here, matching compute_loss() in
+    model/architecture.py:
+      - drop the LAST logit position (it has no corresponding next token)
+      - drop the FIRST label position (it is never a prediction target)
+    After the shift both tensors have length T-1.
 
     WHY RESHAPE BEFORE cross_entropy?
     ────────────────────────────────
     F.cross_entropy expects (N, C) logits and (N,) targets. We have
-    (B, T, V) and (B, T) respectively. Reshaping to (B*T, V) and (B*T,)
-    flattens the batch and time dimensions — the loss is computed over all
-    non-ignored positions regardless of which batch item they came from.
-    This gives correct mean reduction across the active token count.
+    (B, T-1, V) and (B, T-1) respectively. Reshaping flattens the batch
+    and time dimensions — the loss is computed over all non-ignored
+    positions regardless of which batch item they came from.
 
     reduction="mean" divides by the number of non-ignored positions (not
     the total number of tokens), which is what we want — the loss magnitude
     is invariant to how many prompt tokens were masked.
     """
-    B, T, V = logits.shape
+    # Shift: logits[t] predicts labels[t+1], so align by dropping last
+    # logit and first label.
+    shift_logits = logits[:, :-1, :].contiguous()  # (B, T-1, V)
+    shift_labels = labels[:, 1:].contiguous()  # (B, T-1)
+    B, T1, V = shift_logits.shape
     loss = F.cross_entropy(
-        logits.reshape(B * T, V),  # flatten batch × time → (B*T, V)
-        labels.reshape(B * T),  # flatten batch × time → (B*T,)
+        shift_logits.reshape(B * T1, V),  # (B*(T-1), V)
+        shift_labels.reshape(B * T1),  # (B*(T-1),)
         ignore_index=LOSS_IGNORE,  # skip LOSS_IGNORE=-100 positions
         reduction="mean",  # mean over ACTIVE tokens only
     )

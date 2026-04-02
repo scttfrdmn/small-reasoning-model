@@ -7,6 +7,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+- `training/sft.py` — `sft_loss()`: apply causal-LM next-token shift (`logits[:, :-1]` /
+  `labels[:, 1:]`) before computing cross-entropy; the previous version omitted the shift,
+  allowing the model to trivially achieve ~0 loss by echoing the current token via
+  self-attention rather than learning to predict the next token
+
 ### Added
 - `model/kv_compress.py` — TurboQuant KV cache compression (Google Research,
   March 2026): two-stage PolarQuant+INT8 algorithm compressing KV caches ~2×
