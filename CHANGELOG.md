@@ -12,6 +12,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `labels[:, 1:]`) before computing cross-entropy; the previous version omitted the shift,
   allowing the model to trivially achieve ~0 loss by echoing the current token via
   self-attention rather than learning to predict the next token
+- `training/sft.py` — add checkpoint retention policy (keep only the latest `step_*.pt`,
+  deleting the previous on each save); bump `save_every` default from 500 → 5000 to prevent
+  disk exhaustion on long runs (121K-step SFT at 2.8 GB/ckpt would otherwise write 677 GB)
 
 ### Added
 - `model/kv_compress.py` — TurboQuant KV cache compression (Google Research,

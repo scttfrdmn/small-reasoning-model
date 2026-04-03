@@ -199,7 +199,7 @@ class SFTConfig:
 
     # ── Output ────────────────────────────────────────────────────────────
     output_dir: str = "./checkpoints/sft"
-    save_every: int = 500  # Periodic checkpoint every N optimizer steps
+    save_every: int = 5000  # Periodic checkpoint every N optimizer steps
     log_every: int = 10  # Print training metrics every N optimizer steps
     eval_every: int = 200  # Run validation every N optimizer steps
 
@@ -1198,6 +1198,15 @@ def _save(step, model, optimizer, cfg, loss, path):
         path,
     )
     print(f"  → Saved: {path}")
+
+    # Retention policy: keep only the latest step_*.pt checkpoint.
+    # Once a new one is written, the previous is deleted — we only need the
+    # most recent for fault-tolerant resumption. best.pt is excluded from
+    # this glob and always preserved.
+    # Zero-padded step numbers ensure lexicographic == chronological order.
+    checkpoints = sorted(Path(path).parent.glob("step_*.pt"))
+    for old in checkpoints[:-1]:
+        old.unlink()
 
 
 # ---------------------------------------------------------------------------
