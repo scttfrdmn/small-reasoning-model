@@ -8,6 +8,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [Unreleased]
 
 ### Fixed
+- `model/architecture.py` — fix KV-cache decode attention: `is_causal=True` with T_q=1
+  and T_k=T_cache+1 creates a 1×T_k lower-triangular mask that only unmasks column 0 —
+  every generated token attended only to the very first token in the sequence, producing
+  context-free generation despite the KV cache being correctly populated; fixed by setting
+  `is_causal=False` when `kv_cache is not None` (decode mode; causality is already
+  guaranteed structurally since all cached positions precede the current token); also fixed
+  the manual O(T²) fallback path which had the same T_q=1 vs T_k mismatch
 - `model/architecture.py` — fix KV cache prefill: `kv_caches=[]` now signals
   "collect-but-no-prior-cache"; `CausalSelfAttention` returns KV when `collect_kv=True`
   even with no prior cache to prepend; all callers updated to pass `kv_caches=[]` for
