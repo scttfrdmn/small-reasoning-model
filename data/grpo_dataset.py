@@ -605,10 +605,12 @@ def filter_by_difficulty(
             ground_truth = problem["answer_normalized"]
             domain = problem["domain"]
 
-            # Wrap in the instruction format the SFT model was trained on.
-            # SFT training used "User: {prompt}\nAssistant:" as the prompt
-            # boundary, so the model expects this exact format at inference time.
-            formatted_prompt = f"User: {prompt}\nAssistant:"
+            # Wrap in the instruction format the SFT model was trained on, and
+            # seed the assistant turn with <think> to put the model in chain-of-
+            # thought mode. Seeding <think> empirically improves answer accuracy
+            # even when the model doesn't close with </think> — the model produces
+            # more structured reasoning rather than free-form prose.
+            formatted_prompt = f"User: {prompt}\nAssistant: <think>"
 
             # Encode and strip the trailing EOS that the tokenizer post-processor
             # always appends. We want the model to generate the response, not
@@ -657,12 +659,15 @@ def filter_by_difficulty(
 
                     completion = tokenizer.decode(generated, skip_special_tokens=True)
 
-                    # Compute reward using the domain-appropriate verifier.
-                    # We pass format_weight=0.0 because we only care about answer
-                    # correctness for difficulty estimation — format reward is not
-                    # meaningful for pass_rate calculation.
+                    # The prompt was seeded with "<think>", so the completion
+                    # is everything AFTER "<think>". Prepend it so that
+                    # _extract_answer can find </think> if the model generates it,
+                    # and so that the format_reward check for <think>...</think>
+                    # works correctly. format_weight=0.0 here so format doesn't
+                    # influence pass_rate estimation.
+                    full_response = "<think>" + completion
                     reward = compute_reward(
-                        response=completion,
+                        response=full_response,
                         ground_truth=ground_truth,
                         domain=domain,
                         format_weight=0.0,

@@ -305,26 +305,50 @@ def _extract_answer(response: str) -> str:
     """
     Extract the final answer from a model response.
 
-    Heuristic: the answer lives AFTER the closing </think> tag.
-    The model is trained to produce:
-        <think>
-        [multi-step reasoning trace]
-        </think>
-        [final answer here]
+    Priority order (each fallback handles a different output style):
 
-    Edge cases handled:
-      - No </think> present (response is just the answer, no CoT):
-        split("</think>") returns ["response"], parts[-1] == response.
-        We return the full stripped response, so exact-match still works.
-      - Multiple </think> tags (malformed response with nested or repeated CoT blocks):
-        split("</think>") returns more than two parts.
-        parts[-1] is the text after the LAST </think>, which is the most likely
-        location of the final answer. The intermediate parts are discarded.
-      - Trailing whitespace after </think>:
-        strip() removes it so the answer string compares cleanly.
-      - Empty answer after </think> (model stopped generating too early):
-        strip() returns ""; verify_math_exact("", ground_truth) returns 0.0.
+    1. </think> tag present:  return text after the LAST </think> — this is the
+       intended format. The model is trained to produce:
+           <think>[reasoning]</think>[final answer]
+
+    2. \\boxed{...} present:  return the LaTeX boxed content. Many math datasets
+       expect answers in \\boxed{} format. We try this before the numeric fallback
+       because it's more specific than the generic number search.
+
+    3. Last "= <token>" pattern:  the model often ends a line with "= <answer>",
+       e.g. "Total pages = 1500". Extract the right-hand side.
+
+    4. Last number/simple expression:  find the last token that looks like a
+       number (integer, decimal, fraction, negative) in the response. This catches
+       responses where the model states the answer but without any structural marker.
+
+    5. Full response:  last resort — return the stripped response and let the
+       exact-match/SymPy verifier decide. Works if the response IS the answer.
     """
-    # Split on the closing think tag; take everything after the last occurrence.
+    # 1. </think> tag — intended format
     parts = response.split("</think>")
-    return parts[-1].strip() if len(parts) > 1 else response.strip()
+    if len(parts) > 1:
+        return parts[-1].strip()
+
+    # 2. \boxed{...} — LaTeX boxed answer
+    boxed = re.search(r"\\boxed\{([^}]+)\}", response)
+    if boxed:
+        return boxed.group(1).strip()
+
+    # 3. Last "= <value>" on a line, e.g. "Total cost = $42" or "x = -3"
+    # Match optional currency/units before/after the number.
+    eq_match = re.findall(
+        r"=\s*\$?\s*(-?[\d,]+\.?\d*(?:/[\d,]+)?)",
+        response,
+    )
+    if eq_match:
+        # Take the last match (most likely the final computed value)
+        return eq_match[-1].replace(",", "").strip()
+
+    # 4. Last standalone number — integer, decimal, fraction, or negative
+    num_matches = re.findall(r"-?\d[\d,]*\.?\d*(?:/\d+)?", response)
+    if num_matches:
+        return num_matches[-1].replace(",", "").strip()
+
+    # 5. Full response fallback
+    return response.strip()
