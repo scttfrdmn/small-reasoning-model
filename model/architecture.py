@@ -721,14 +721,22 @@ class GroupedQueryAttention(nn.Module):
             # causal mask internally and fuses it with the softmax — no explicit
             # (T, T) mask tensor is allocated.  When a mask IS provided (training
             # with padding), is_causal must be False to avoid double-masking.
+            #
+            # CRITICAL: is_causal must be False during KV-cache decode steps.
+            # When T_q=1 and T_k=T_cache+1, PyTorch's is_causal=True creates a
+            # (1, T_k) lower-triangular mask that only unmasks column 0 — the query
+            # can only attend to the very first token, destroying all context.
+            # In decode mode every cached K/V is already from a prior position
+            # (causality is structurally guaranteed), so no mask is needed.
             dropout_p = self.dropout if self.training else 0.0
+            is_decode = kv_cache is not None  # True only during KV-cache decode steps
             out = F.scaled_dot_product_attention(
                 q,
                 k,
                 v,
                 attn_mask=attention_mask,
                 dropout_p=dropout_p,
-                is_causal=(attention_mask is None),  # avoid double masking
+                is_causal=(attention_mask is None and not is_decode),
                 scale=self.scale,
             )
         else:
@@ -740,9 +748,10 @@ class GroupedQueryAttention(nn.Module):
                 # Additive mask: 0 for valid positions, -inf for masked positions.
                 # Adding -inf causes those positions to become 0 after softmax.
                 scores = scores + attention_mask
-            else:
-                # Build a causal boolean mask: True where attention is ALLOWED
-                # (lower-triangular), then mask_fill positions where it is NOT allowed.
+            elif kv_cache is None:
+                # Training / prefill: build a (T_q, T_q) causal lower-triangular mask.
+                # In decode mode (kv_cache is not None), all cached positions are already
+                # causally prior — no mask needed and T_q != T_k so .tril() would be wrong.
                 causal = torch.ones(T, T, device=x.device, dtype=torch.bool).tril()
                 scores = scores.masked_fill(~causal, float("-inf"))
             scores = F.softmax(scores, dim=-1)
