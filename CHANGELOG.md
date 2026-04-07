@@ -8,6 +8,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [Unreleased]
 
 ### Fixed
+- `model/architecture.py` — fix KV cache prefill: `kv_caches=[]` now signals
+  "collect-but-no-prior-cache"; `CausalSelfAttention` returns KV when `collect_kv=True`
+  even with no prior cache to prepend; all callers updated to pass `kv_caches=[]` for
+  the prefill step so decode steps receive full context instead of running in isolation
+  (root cause of the repeated-token / context-free generation bug)
 - `inference/serve.py`, `data/grpo_dataset.py` — strip trailing EOS token from
   encoded prompts before generation; the tokenizer post-processor appends EOS to
   every `encode()` call, causing the model to generate after end-of-sequence and

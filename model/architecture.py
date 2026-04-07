@@ -638,8 +638,9 @@ class GroupedQueryAttention(nn.Module):
         self,
         x: torch.Tensor,  # (B, T, d_model)
         attention_mask: Optional[torch.Tensor],  # (B, 1, T, T) or None
-        kv_cache: Optional[tuple] = None,  # (k_cache, v_cache) for generation
+        kv_cache: Optional[tuple] = None,  # (k_cache, v_cache) for generation decode steps
         position_offset: int = 0,
+        collect_kv: bool = False,  # True during prefill to capture KV for the decode cache
     ) -> tuple[torch.Tensor, Optional[tuple]]:
 
         B, T, _ = x.shape
@@ -671,7 +672,7 @@ class GroupedQueryAttention(nn.Module):
         # and equal to the number of cached tokens during generation.
         q, k = self.rope(q, k, offset=position_offset)
 
-        # --- KV cache: prepend cached keys/values (generation only) ---
+        # --- KV cache: prepend cached keys/values (decode steps only) ---
         # During generation we process one new token at a time (T=1), but the
         # attention must see all past tokens.  The KV cache stores the already-
         # computed keys and values from previous steps.  We simply concatenate
@@ -683,8 +684,9 @@ class GroupedQueryAttention(nn.Module):
             k_cache, v_cache = kv_cache
             k = torch.cat([k_cache, k], dim=2)  # (B, n_kv_heads, past+T, head_dim)
             v = torch.cat([v_cache, v], dim=2)  # (B, n_kv_heads, past+T, head_dim)
-        # Only return a cache tuple when the caller wants generation mode
-        new_kv_cache = (k, v) if kv_cache is not None else None
+        # Return KV when (a) updating an existing decode cache, or (b) collect_kv=True
+        # (prefill mode — saves the full prompt KV so decode step 1 has context).
+        new_kv_cache = (k, v) if (kv_cache is not None or collect_kv) else None
 
         # --- GQA: expand KV heads to match Q heads ---
         # After prepending the cache, k and v have n_kv_heads heads but q has
@@ -860,6 +862,7 @@ class TransformerBlock(nn.Module):
         attention_mask: Optional[torch.Tensor] = None,
         kv_cache: Optional[tuple] = None,
         position_offset: int = 0,
+        collect_kv: bool = False,
     ) -> tuple[torch.Tensor, Optional[tuple]]:
 
         # --- Attention sub-block (pre-norm + residual) ---
@@ -875,6 +878,7 @@ class TransformerBlock(nn.Module):
             attention_mask=attention_mask,
             kv_cache=kv_cache,
             position_offset=position_offset,
+            collect_kv=collect_kv,
         )
         x = x + attn_out  # residual addition: maintains the input signal
 
@@ -1064,19 +1068,24 @@ class SmallReasoningModel(nn.Module):
             attn_mask = _build_additive_mask(attention_mask, x.dtype, x.device)
 
         # --- Transformer blocks ---
-        # Accumulate updated KV caches only in generation mode (kv_caches is not None).
-        # During training kv_caches is None and new_kv_caches remains None throughout,
-        # avoiding the overhead of building and storing cache tensors.
+        # Accumulate updated KV caches when kv_caches is not None (generation mode).
+        # kv_caches=[]  → prefill: collect fresh KV caches, no prior values to prepend.
+        # kv_caches=[…] → decode: prepend prior cached K/V then append new token's K/V.
+        # kv_caches=None → training: skip all caching overhead.
         new_kv_caches = [] if kv_caches is not None else None
+        # collect_kv=True tells each attention layer to return its (k, v) tensors even
+        # when there is no prior cache to prepend (i.e., during prefill with kv_caches=[]).
+        collect_kv = kv_caches is not None and len(kv_caches) == 0
 
         for i, block in enumerate(self.blocks):
-            # Retrieve the per-layer cache (or None during training)
-            kv = kv_caches[i] if kv_caches is not None else None
+            # Retrieve the per-layer cache (None during prefill or training)
+            kv = kv_caches[i] if (kv_caches is not None and len(kv_caches) > i) else None
             x, new_kv = block(
                 x,
                 attention_mask=attn_mask,
                 kv_cache=kv,
                 position_offset=position_offset,
+                collect_kv=collect_kv,
             )
             # Store the updated cache for this layer so it can be returned to the caller
             if new_kv_caches is not None:
@@ -1172,9 +1181,10 @@ class SmallReasoningModel(nn.Module):
 
         # --- Phase 1: Prefill ---
         # Process the full prompt in one forward pass to populate the KV cache.
-        # We pass no kv_caches so the model runs in training-forward mode (no cache
-        # input), but returns the freshly computed K/V tensors for all prompt positions.
-        logits, kv_caches = self.forward(input_ids)
+        # kv_caches=[] signals "collect KV but no prior cache to prepend" — the
+        # returned kv_caches will hold the per-layer (K, V) tensors for the prompt,
+        # ready to be prepended during decode step 1.
+        logits, kv_caches = self.forward(input_ids, kv_caches=[])
         # We only need the logits for the LAST prompt token — that prediction
         # gives the distribution for the first generated token.
         next_token_logits = logits[:, -1, :]  # (B, vocab_size)

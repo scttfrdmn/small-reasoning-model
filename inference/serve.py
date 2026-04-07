@@ -192,8 +192,10 @@ def _generate(prompt: str, max_new_tokens: int, temperature: float) -> str:
     )
 
     with autocast_ctx:
-        # Prefill: single forward pass over full context to populate KV cache
-        logits, kv_caches = _model(input_ids)  # (1, T_ctx, V)
+        # Prefill: single forward pass over full context to populate KV cache.
+        # kv_caches=[] signals collect-but-no-prior-cache; the returned list
+        # holds per-layer (K, V) tensors that decode step 1 will prepend to.
+        logits, kv_caches = _model(input_ids, kv_caches=[])  # (1, T_ctx, V)
 
         # Optionally compress the prefill KV caches immediately after generation
         if _compress_kv and kv_caches is not None:

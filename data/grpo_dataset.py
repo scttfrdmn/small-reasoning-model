@@ -629,7 +629,8 @@ def filter_by_difficulty(
                     # not a HuggingFace model, so no .generate() method.
                     #
                     # Prefill: single forward pass over the full prompt.
-                    logits, kv_caches = model(input_ids)
+                    # kv_caches=[] = collect KV but no prior cache to prepend.
+                    logits, kv_caches = model(input_ids, kv_caches=[])
                     generated: list[int] = []
                     prompt_len = input_ids.shape[1]
 
