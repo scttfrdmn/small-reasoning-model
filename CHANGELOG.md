@@ -8,6 +8,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [Unreleased]
 
 ### Fixed
+- `training/rewards.py` — `_extract_answer()`: add layered fallback extraction for
+  models that don't close `</think>`: (1) `\boxed{...}` LaTeX notation, (2) last
+  `= <number>` pattern on a line, (3) last standalone number/expression in the
+  response; previously the fallback returned the full response paragraph which never
+  matched the ground-truth answer, causing 0% keep rate in the GRPO difficulty filter
+- `data/grpo_dataset.py` — seed assistant turn with `<think>` (`Assistant: <think>`)
+  instead of bare `Assistant:`; seeding the chain-of-thought token empirically improves
+  arithmetic accuracy (150→1500 observed on 5×300); also prepend `<think>` to
+  the decoded completion before `compute_reward()` so `_extract_answer` sees the
+  full response including the seeded opening tag
 - `model/architecture.py` — fix KV-cache decode attention: `is_causal=True` with T_q=1
   and T_k=T_cache+1 creates a 1×T_k lower-triangular mask that only unmasks column 0 —
   every generated token attended only to the very first token in the sequence, producing
