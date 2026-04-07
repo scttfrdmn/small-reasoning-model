@@ -8,6 +8,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [Unreleased]
 
 ### Fixed
+- `data/grpo_dataset.py` — widen difficulty filter window from 20–80% to 5–95%:
+  with group_size=8 the 20–80% window requires exactly 2–6/8 correct, producing ~2%
+  keep rate on the SFT checkpoint; widened to ≥1/8 and ≤7/8 correct (GRPO only needs
+  within-group reward variance — all-zero or all-one groups produce zero advantage)
 - `training/rewards.py` — `_extract_answer()`: add layered fallback extraction for
   models that don't close `</think>`: (1) `\boxed{...}` LaTeX notation, (2) last
   `= <number>` pattern on a line, (3) last standalone number/expression in the

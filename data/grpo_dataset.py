@@ -98,8 +98,16 @@ DATASET_IDS = {
 FILTER_GROUP_SIZE = 8
 
 # Pass-rate window to keep after difficulty filtering.
-PASS_RATE_MIN = 0.20
-PASS_RATE_MAX = 0.80
+# With group_size=8, the granularity is 1/8=0.125 steps. The canonical
+# 20-80% window (keep 2-6/8 correct) produced only ~2% keep rate on the
+# SFT checkpoint — the model rarely falls in that exact window; most
+# problems are pass_rate=0 (too hard) or pass_rate=1 (too easy).
+# Widened to 5-95% so that any problem where the model occasionally
+# succeeds (≥1/8) or occasionally fails (≤7/8) provides gradient signal.
+# GRPO only requires variance within the group: all-zero or all-one groups
+# produce zero advantage (no learning); any mix is useful.
+PASS_RATE_MIN = 0.05   # keep if ≥1/8 correct  (was 0.20)
+PASS_RATE_MAX = 0.95   # keep if ≤7/8 correct  (was 0.80)
 
 # Max new tokens to generate per completion during difficulty filtering.
 MAX_GEN_TOKENS = 512
