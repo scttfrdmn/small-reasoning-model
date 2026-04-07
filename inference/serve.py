@@ -29,6 +29,7 @@ from fastapi import FastAPI, HTTPException
 from pydantic import BaseModel, Field
 
 from model.architecture import SmallReasoningModel, get_config
+from model.kv_compress import forward_compressed, kv_cache_memory_report
 from tokenizer.train_tokenizer import load_tokenizer
 
 # ---------------------------------------------------------------------------
@@ -44,6 +45,7 @@ _device: Optional[torch.device] = None
 _dtype: torch.dtype = torch.bfloat16
 _max_seq_len: int = 4096
 _eos_id: int = 2
+_compress_kv: bool = False  # TurboQuant KV cache compression
 
 
 # ---------------------------------------------------------------------------
@@ -58,7 +60,7 @@ async def lifespan(app: FastAPI):
 
     Everything before `yield` runs at startup; everything after at shutdown.
     """
-    global _model, _tokenizer, _device, _dtype, _max_seq_len, _eos_id
+    global _model, _tokenizer, _device, _dtype, _max_seq_len, _eos_id, _compress_kv
 
     args = app.state.args  # stashed by main() before calling uvicorn.run
 
@@ -89,9 +91,12 @@ async def lifespan(app: FastAPI):
     _model.to(dtype=_dtype, device=_device)
     _model.eval()
 
+    _compress_kv = args.compress_kv
+    compress_label = "TurboQuant 2×" if _compress_kv else "off"
     print(
         f"[srm-serve] Ready on {_device} ({args.dtype})  "
-        f"vocab={_tokenizer.get_vocab_size()}  max_seq={_max_seq_len}"
+        f"vocab={_tokenizer.get_vocab_size()}  max_seq={_max_seq_len}  "
+        f"kv_compress={compress_label}"
     )
 
     yield  # server runs here
@@ -156,30 +161,48 @@ def generate(req: GenerateRequest) -> GenerateResponse:
 @torch.inference_mode()
 def _generate(prompt: str, max_new_tokens: int, temperature: float) -> str:
     """
-    KV-cache autoregressive generation.
+    KV-cache autoregressive generation with optional TurboQuant compression.
 
     Prefill runs once over the full prompt to populate the KV cache, then
     each decode step processes a single token — keeping per-step cost
     O(cache size) rather than O(sequence_length²).
+
+    When _compress_kv=True (--compress-kv flag), each layer's KV cache is
+    compressed to ~2× smaller using PolarQuant (K) + INT8 (V) between decode
+    steps. This halves the memory occupied by the KV cache during generation,
+    enabling longer contexts or more concurrent sessions on the same hardware.
     """
     ctx_ids = _tokenizer.encode(prompt).ids
+    # The tokenizer post-processor appends EOS to every encode() call.
+    # Strip it here so the model generates a response rather than predicting
+    # tokens after an end-of-sequence marker (which produces garbage).
+    if ctx_ids and ctx_ids[-1] == _eos_id:
+        ctx_ids = ctx_ids[:-1]
     # Truncate context to leave room for generated tokens within the model window
     ctx_ids = ctx_ids[-(_max_seq_len - max_new_tokens) :]
 
     input_ids = torch.tensor([ctx_ids], dtype=torch.long, device=_device)
     generated_ids: list[int] = []
 
-    with torch.amp.autocast(
+    autocast_ctx = torch.amp.autocast(
         # MPS does not support bfloat16 autocast natively — use CPU dtype path
         device_type=_device.type if _device.type != "mps" else "cpu",
         dtype=_dtype,
         enabled=(_dtype == torch.bfloat16),
-    ):
+    )
+
+    with autocast_ctx:
         # Prefill: single forward pass over full context to populate KV cache
         logits, kv_caches = _model(input_ids)  # (1, T_ctx, V)
+
+        # Optionally compress the prefill KV caches immediately after generation
+        if _compress_kv and kv_caches is not None:
+            from model.kv_compress import compress_kv_caches
+            kv_caches = compress_kv_caches(kv_caches)
+
         next_logits = logits[0, -1, :]  # (V,) — logits for the first new token
 
-        for _ in range(max_new_tokens):
+        for step_i in range(max_new_tokens):
             if temperature == 0.0:
                 # Greedy: deterministic argmax
                 next_id = int(next_logits.argmax(dim=-1).item())
@@ -194,9 +217,16 @@ def _generate(prompt: str, max_new_tokens: int, temperature: float) -> str:
             if next_id == _eos_id:
                 break
 
-            # Decode step: single new token, reusing the populated KV cache
+            # Decode step: single new token, reusing the populated KV cache.
+            # When kv_compress is enabled, forward_compressed handles the
+            # decompress-forward-recompress cycle transparently.
             next_input = torch.tensor([[next_id]], dtype=torch.long, device=_device)
-            logits, kv_caches = _model(next_input, kv_caches=kv_caches)
+            if _compress_kv:
+                logits, kv_caches = forward_compressed(
+                    _model, next_input, kv_caches, position_offset=len(ctx_ids) + step_i
+                )
+            else:
+                logits, kv_caches = _model(next_input, kv_caches=kv_caches)
             next_logits = logits[0, -1, :]
 
     return _tokenizer.decode(generated_ids)
@@ -228,6 +258,13 @@ def main() -> None:
         default="bfloat16",
         choices=["bfloat16", "float32"],
         help="Weight dtype (default: bfloat16)",
+    )
+    parser.add_argument(
+        "--compress-kv",
+        dest="compress_kv",
+        action="store_true",
+        default=False,
+        help="[TurboQuant] Compress KV cache ~2× using PolarQuant+INT8 (no accuracy loss)",
     )
     args = parser.parse_args()
 

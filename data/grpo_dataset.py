@@ -605,9 +605,20 @@ def filter_by_difficulty(
             ground_truth = problem["answer_normalized"]
             domain = problem["domain"]
 
-            # Tokenize the prompt. We do not add any special instruction-format
-            # wrapping here — the model was fine-tuned on bare prompts.
-            input_ids = tokenizer.encode(prompt, return_tensors="pt").to(device)
+            # Wrap in the instruction format the SFT model was trained on.
+            # SFT training used "User: {prompt}\nAssistant:" as the prompt
+            # boundary, so the model expects this exact format at inference time.
+            formatted_prompt = f"User: {prompt}\nAssistant:"
+
+            # Encode and strip the trailing EOS that the tokenizer post-processor
+            # always appends. We want the model to generate the response, not
+            # predict tokens after end-of-sequence (which produces garbage output).
+            enc = tokenizer(formatted_prompt, return_tensors="pt", add_special_tokens=True)
+            ids = enc["input_ids"][0]
+            eos_id = tokenizer.eos_token_id or 2
+            if ids[-1].item() == eos_id:
+                ids = ids[:-1]
+            input_ids = ids.unsqueeze(0).to(device)
 
             correct = 0
 

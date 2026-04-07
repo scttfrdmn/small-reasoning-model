@@ -8,6 +8,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [Unreleased]
 
 ### Fixed
+- `inference/serve.py`, `data/grpo_dataset.py` — strip trailing EOS token from
+  encoded prompts before generation; the tokenizer post-processor appends EOS to
+  every `encode()` call, causing the model to generate after end-of-sequence and
+  produce degenerate repeated-token output
+- `data/grpo_dataset.py` — wrap raw problem prompts in `User: {prompt}\nAssistant:`
+  instruction format before encoding; the SFT model was trained on this format and
+  produces incoherent output without it
 - `training/sft.py` — `sft_loss()`: apply causal-LM next-token shift (`logits[:, :-1]` /
   `labels[:, 1:]`) before computing cross-entropy; the previous version omitted the shift,
   allowing the model to trivially achieve ~0 loss by echoing the current token via
