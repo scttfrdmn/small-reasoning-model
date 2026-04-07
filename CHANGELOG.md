@@ -86,7 +86,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   TurboQuant and the Memory Wall": PolarQuant algorithm, unit vector insight
   (no per-block normalization constants), head_dim=128 error bounds, phase-by-phase
   impact table, implementation details, Stage 2 QJL limitations, verification output
-- `docs/blog/README.md` — added posts 11–13 to series index
+- `docs/blog/14-generation-debugging.md` — blog post: "Five Bugs That Broke
+  Generation (And What Each One Taught Us)": SFT loss causal shift, disk
+  exhaustion from no checkpoint retention, EOS-terminated prompts, SFT
+  instruction format missing in GRPO filter, KV prefill returning None,
+  is_causal=True masking all context in decode mode
+- `docs/blog/README.md` — added posts 11–14 to series index
 - `training/pretrain.py` — Apple MPS backend support for local smoke testing
 - `data/preprocess.py` — full pre-training data pipeline: streaming HuggingFace
   download, quality filter, SHA-256 dedup, `MixedStreamSampler` curriculum mixing

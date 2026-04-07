@@ -48,6 +48,7 @@ wrong about, and what broke before it worked.
 | 11 | [The Real Use Case: Structured Intent and Why Small Reasoning Models Matter](11-structured-intent.md) | ✅ Written | SI pipeline, format alignment, si-go-v1 results, hardware deployment |
 | 12 | [The Self-Improving System: Alignment, Verification, and the Architecture That Builds Itself](12-self-improving-system.md) | ✅ Written | Corrected architecture (reasoning model inside endless), "?" target, self-improvement dynamics, merge/splinter/refactor, bootstrap |
 | 13 | [Compressing the KV Cache: TurboQuant and the Memory Wall](13-kv-cache-compression.md) | ✅ Written | PolarQuant algorithm, unit vector insight, memory analysis per phase, GRPO budget, Graviton4/Kamrui deployment |
+| 14 | [Five Bugs That Broke Generation (And What Each One Taught Us)](14-generation-debugging.md) | ✅ Written | SFT loss shift, disk exhaustion, EOS-terminated prompts, instruction format mismatch, KV prefill returning None, is_causal decode masking bug |
 
 ---
 
