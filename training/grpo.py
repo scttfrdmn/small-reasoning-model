@@ -215,8 +215,14 @@ class GRPOConfig:
     # Problems with pass_rate < min or > max are excluded entirely, since
     # the model either never solves them (advantage always negative) or
     # always solves them (advantage always near zero). Both produce no signal.
-    min_pass_rate: float = 0.20
-    max_pass_rate: float = 0.80
+    # Widened from 0.20–0.80 to match data/grpo_dataset.py: with group_size=8,
+    # 0.20 requires ≥2/8 correct which excludes most problems at the SFT stage.
+    # 0.05–0.95 keeps any problem with 1–7/8 correct (non-uniform reward groups).
+    min_pass_rate: float = 0.05
+    max_pass_rate: float = 0.95
+
+    # ── KV cache compression ──────────────────────────────────────────────
+    compress_kv: bool = False  # [TurboQuant] Compress KV cache ~2× during generation
 
     # ── Memory ─────────────────────────────────────────────────────────────
     grad_checkpointing: bool = True  # Recompute activations on backward; saves ~40% memory
@@ -530,6 +536,20 @@ def _extract_final_answer(completion: str) -> Optional[str]:
     if think_match:
         answer = think_match.group(1).strip()
         if answer:
+            # Try to extract a more specific answer from the post-think text:
+            # the model often writes "therefore, $a=\boxed{2}$" after </think>
+            # and we want just "2", not the whole sentence.
+            boxed_in_answer = re.findall(r"\\boxed\{([^}]+)\}", answer)
+            if boxed_in_answer:
+                return boxed_in_answer[-1]
+            # Try "= <number>" pattern
+            eq_in_answer = re.findall(r"=\s*\$?\s*(-?[\d,]+\.?\d*(?:/[\d,]+)?)", answer)
+            if eq_in_answer:
+                return eq_in_answer[-1].replace(",", "").strip()
+            # Try last standalone number
+            num_in_answer = re.findall(r"-?\d[\d,]*\.?\d*(?:/\d+)?", answer)
+            if num_in_answer:
+                return num_in_answer[-1].replace(",", "").strip()
             return answer
 
     # 2. LaTeX \boxed{ANSWER}: used in competition math (MATH, AMC datasets).
@@ -1167,17 +1187,31 @@ def generate_completions(
         kv_caches = None
         pos_offset = 0
 
-        # Prefill: process the full prompt once to populate the KV cache.
-        # This avoids re-attending over the prompt at every decode step,
-        # giving O(T_prompt) prefill cost rather than O(T_prompt × T_completion).
-        with torch.amp.autocast(
+        autocast_ctx = torch.amp.autocast(
             device_type=device.type if device.type != "mps" else "cpu",
             dtype=dtype,
             enabled=(dtype == torch.bfloat16),
-        ):
-            logits, kv_caches = model(batch)  # (G, T_p, V) — single prefill pass
+        )
+
+        # Prefill: process the full prompt once to populate the KV cache.
+        # This avoids re-attending over the prompt at every decode step,
+        # giving O(T_prompt) prefill cost rather than O(T_prompt × T_completion).
+        # kv_caches=[] signals "collect KV caches for all layers" (prefill mode).
+        # Without this, model runs in training mode (kv_caches=None) and returns
+        # no cache, causing decode steps to run with no context.
+        with autocast_ctx:
+            logits, kv_caches = model(batch, kv_caches=[])  # (G, T_p, V) — prefill
         next_logits = logits[:, -1, :]  # (G, V) — logits for first new token
         pos_offset = T_p  # KV cache covers positions 0..T_p-1; next token is at T_p
+
+        # Optionally compress the prefill KV caches to reduce peak memory
+        # during the generation loop. forward_compressed handles the
+        # decompress-forward-recompress cycle on each subsequent decode step.
+        use_compress = getattr(generate_completions, "_compress_kv", False)
+        if use_compress and kv_caches is not None:
+            from model.kv_compress import compress_kv_caches, forward_compressed
+
+            kv_caches = compress_kv_caches(kv_caches)
 
         for _ in range(max_new_tokens):
             next_tok = _sample_tokens(next_logits, temperature, top_p)  # (G,)
@@ -1188,15 +1222,29 @@ def generate_completions(
             if finished.all():
                 break  # Early exit: all group members have finished
 
-            # Single-token decode step: feed only the just-sampled token and
-            # let the KV cache handle the full history.
-            with torch.amp.autocast(
-                device_type=device.type if device.type != "mps" else "cpu",
-                dtype=dtype,
-                enabled=(dtype == torch.bfloat16),
-            ):
-                next_input = next_tok.unsqueeze(1)  # (G, 1) — one token per sequence
-                logits, _ = model(next_input, position_offset=pos_offset)
+            # Single-token decode step: feed the just-sampled token and
+            # let the KV cache provide the full history.
+            # BUG FIX: the original code discarded kv_caches here with `_`,
+            # causing each decode step to run with no context (only 1 token).
+            # Now we correctly pass and update the cache each step.
+            next_input = next_tok.unsqueeze(1)  # (G, 1) — one token per sequence
+
+            if use_compress and kv_caches is not None:
+                # forward_compressed: decompress → forward → recompress
+                logits, kv_caches = forward_compressed(
+                    model,
+                    next_input,
+                    kv_caches,
+                    position_offset=pos_offset,
+                    autocast_ctx=autocast_ctx,
+                )
+            else:
+                with autocast_ctx:
+                    logits, kv_caches = model(
+                        next_input,
+                        kv_caches=kv_caches,
+                        position_offset=pos_offset,
+                    )
             next_logits = logits[:, -1, :]  # (G, V) — logits for the next token
             pos_offset += 1  # Advance position counter for correct positional encoding
 
@@ -1320,6 +1368,13 @@ def build_prompt(example: dict, tokenizer) -> torch.Tensor:
 
     # BOS is prepended by the tokenizer's post-processor (configured at
     # tokenizer training time), so we don't manually prepend BOS_ID here.
+    # Strip trailing EOS: the tokenizer post-processor appends EOS to every
+    # encode() call, but we need the model to GENERATE after this prompt,
+    # not treat it as a finished sequence. Generating after EOS produces
+    # degenerate context-free output (the model sees "sequence is over").
+    if ids and ids[-1] == tokenizer.token_to_id("<eos>"):
+        ids = ids[:-1]
+
     return torch.tensor(ids, dtype=torch.long)
 
 
@@ -1378,7 +1433,9 @@ def train(cfg: GRPOConfig):
     # ── Tokenizer ─────────────────────────────────────────────────────
     from tokenizers import Tokenizer
 
-    tokenizer = Tokenizer.from_file(str(Path(cfg.tokenizer_path) / "tokenizer.json"))
+    tok_path = str(Path(cfg.tokenizer_path) / "tokenizer.json")
+    tokenizer = Tokenizer.from_file(tok_path)
+    print(f"Tokenizer: {tok_path}")
 
     # ── Model (policy) ────────────────────────────────────────────────
     model_cfg = CONFIGS[cfg.model_config]
@@ -1537,7 +1594,9 @@ def train(cfg: GRPOConfig):
                 combined_reward(
                     completion=comp,
                     example=ex,
-                    domain=cfg.domain,
+                    # Use per-example domain if available (filtered dataset has
+                    # math_exact vs math_sympy per problem); fall back to global cfg
+                    domain=ex.get("domain", cfg.domain),
                     format_weight=cfg.format_reward_weight,
                     completion_len=int(comp_len.item()),
                     max_gen_tokens=cfg.max_gen_tokens,
@@ -1822,15 +1881,24 @@ def _enable_gradient_checkpointing(model):
         orig = block.forward
 
         @functools.wraps(orig)
-        def cp_fwd(x, attention_mask=None, kv_cache=None, position_offset=0, _orig=orig):
-            if kv_cache is not None:
-                # KV cache path: used during generation inference — pass through
-                # without checkpointing (no backward needed here).
+        def cp_fwd(
+            x,
+            attention_mask=None,
+            kv_cache=None,
+            position_offset=0,
+            collect_kv=False,
+            _orig=orig,
+        ):
+            if kv_cache is not None or collect_kv:
+                # KV cache path (decode or prefill with collect_kv=True):
+                # pass through without checkpointing — no backward needed
+                # during generation, and we need the KV tensors returned.
                 return _orig(
                     x,
                     attention_mask=attention_mask,
                     kv_cache=kv_cache,
                     position_offset=position_offset,
+                    collect_kv=collect_kv,
                 )
 
             def fn(x_):
@@ -2085,6 +2153,13 @@ def main():
         "--domain", type=str, default="math", choices=["math", "math_sympy", "code", "mixed"]
     )
     parser.add_argument("--backend", type=str, default="cuda", choices=["cuda", "neuron", "cpu"])
+    parser.add_argument(
+        "--compress-kv",
+        dest="compress_kv",
+        action="store_true",
+        default=False,
+        help="[TurboQuant] Compress KV cache ~2× during generation (PolarQuant+INT8, no accuracy loss)",
+    )
     # Ablation flags
     parser.add_argument(
         "--no_dapo",
@@ -2123,6 +2198,7 @@ def main():
         backend=args.backend,
         no_dapo=args.no_dapo,
         no_dr_grpo=args.no_dr_grpo,
+        compress_kv=args.compress_kv,
     )
     train(cfg)
 

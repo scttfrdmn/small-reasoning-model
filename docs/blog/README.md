@@ -49,6 +49,7 @@ wrong about, and what broke before it worked.
 | 12 | [The Self-Improving System: Alignment, Verification, and the Architecture That Builds Itself](12-self-improving-system.md) | ✅ Written | Corrected architecture (reasoning model inside endless), "?" target, self-improvement dynamics, merge/splinter/refactor, bootstrap |
 | 13 | [Compressing the KV Cache: TurboQuant and the Memory Wall](13-kv-cache-compression.md) | ✅ Written | PolarQuant algorithm, unit vector insight, memory analysis per phase, GRPO budget, Graviton4/Kamrui deployment |
 | 14 | [Five Bugs That Broke Generation (And What Each One Taught Us)](14-generation-debugging.md) | ✅ Written | SFT loss shift, disk exhaustion, EOS-terminated prompts, instruction format mismatch, KV prefill returning None, is_causal decode masking bug |
+| 15 | [What GRPO Actually Learned (And What It Didn't)](15-grpo-eval.md) | ✅ Written | GRPO eval results, stochastic vs consolidated knowledge, syntax vs semantics of reasoning, domain specialization, process reward models |
 
 ---
 

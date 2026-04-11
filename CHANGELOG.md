@@ -7,7 +7,43 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+- `eval/math_eval.py` — domain-specific math evaluation script that reuses the GRPO
+  generation pipeline (`build_prompt`, `generate_completions`, `combined_reward`) to
+  measure pass@1, pass@8, and mean reward on math problems; supports `--source` filter,
+  train-set exclusion, and per-domain breakdown; correctly loads checkpoint formats with
+  `model` or `model_state_dict` keys
+- Blog post 15: "What GRPO Actually Learned (And What It Didn't)" — analysis of GRPO
+  eval results at 500M scale: stochastic vs consolidated knowledge, syntax vs semantics
+  of reasoning, domain specialization effects, process reward model motivation
+
 ### Fixed
+- `training/grpo.py` — fix `build_prompt()`: strip trailing EOS token from encoded
+  prompts; the tokenizer post-processor appends EOS to every `encode()` call, causing
+  the model to generate after end-of-sequence and produce degenerate context-free output
+  (same bug previously fixed in `data/grpo_dataset.py` and `inference/serve.py`)
+- `training/grpo.py` — fix `_extract_final_answer()`: after extracting text following
+  `</think>`, recursively search for `\boxed{}`, `= <number>`, or standalone numbers
+  within that text; previously returned the raw post-think sentence (e.g.
+  `"therefore, $a=\boxed{2}$"`) which never matched the ground-truth `"2"`
+- `training/grpo.py` — fix `_enable_gradient_checkpointing()`: add `collect_kv`
+  parameter to the `cp_fwd` wrapper; without it, `SmallReasoningModel.forward()` calls
+  `block(x, collect_kv=True)` during KV-cache prefill and gets `TypeError: unexpected
+  keyword argument`; also pass through (skip checkpointing) when `collect_kv=True`
+  since prefill needs the returned KV tensors
+- `training/grpo.py` — fix `generate_completions()` prefill: pass `kv_caches=[]` to
+  signal collect-KV mode; without it, `model(batch)` runs in training mode
+  (`kv_caches=None`) and returns `None` for KV caches, causing decode steps to run with
+  no context (each token only sees itself, not the prompt or prior tokens)
+- `training/grpo.py` — use per-example domain (`ex.get("domain", cfg.domain)`) in
+  reward computation; the filtered dataset has per-problem domains (`math_exact` vs
+  `math_sympy`) but `combined_reward` was using the global `cfg.domain` for all problems
+- `training/grpo.py` — widen `GRPOConfig.min_pass_rate` 0.20→0.05 and `max_pass_rate`
+  0.80→0.95 to match `data/grpo_dataset.py` widened filter; with the old 0.20 threshold,
+  the dataset loader re-filtered 82% of examples (pass_rate=0.125 problems)
+- `training/grpo.py` — add missing `compress_kv` field to `GRPOConfig` dataclass;
+  the CLI `--compress-kv` flag and constructor call passed `compress_kv=` but the field
+  was never defined, causing `TypeError` on startup
 - `data/grpo_dataset.py` — widen difficulty filter window from 20–80% to 5–95%:
   with group_size=8 the 20–80% window requires exactly 2–6/8 correct, producing ~2%
   keep rate on the SFT checkpoint; widened to ≥1/8 and ≤7/8 correct (GRPO only needs
