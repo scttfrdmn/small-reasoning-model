@@ -16,6 +16,35 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Blog post 15: "What GRPO Actually Learned (And What It Didn't)" — analysis of GRPO
   eval results at 500M scale: stochastic vs consolidated knowledge, syntax vs semantics
   of reasoning, domain specialization effects, process reward model motivation
+- `eval/si_eval.py` — Structured Intent evaluation script; tests whether the model can
+  generate valid SI specs (JSON with function/signature/behavior fields) from natural
+  language task descriptions; reports format score, field completeness, quality, and
+  pass@1/pass@k metrics with per-category and per-difficulty breakdowns
+- `eval/si_rewards.py` — SI-specific reward functions: `reward_si_format()` (JSON
+  extraction after `</think>`), `reward_si_fields()` (required field presence),
+  `reward_si_quality()` (field content plausibility), `reward_si_combined()`
+- `eval/si_test_cases.jsonl` — 35 hand-crafted SI test cases across 7 categories
+  (string, search, sort, array, data_structure, utility, validation, decomposition)
+  and 3 difficulty levels
+- `data/sft/si_examples.jsonl` — 65 Structured Intent SFT training examples: each
+  has `<think>` reasoning followed by a valid JSON spec with function, signature,
+  behavior, constraints, and examples fields; covers utility functions, data structures,
+  string operations, decomposition tasks, and natural language prompts
+- `inference/serve.py` — add majority voting and best-of-N support: new request fields
+  `n_samples` and `voting` ("none"|"majority"|"best_of_n"); majority picks the most
+  common extracted answer, best_of_n scores completions by JSON structural quality
+- `eval/math_eval.py` — add `pass@1_voted` metric: extracts answers from all group
+  completions, picks the most common via majority vote, checks against ground truth
+
+### Changed
+- `eval/math_eval.py` — import `normalize_answer` and `_extract_final_answer` from
+  GRPO for majority voting answer extraction
+
+### Fixed
+- `training/sft.py` — fix `_enable_gradient_checkpointing()`: add `collect_kv`
+  parameter to `cp_forward` wrapper (same fix as `training/grpo.py`); without it,
+  loading GRPO checkpoints that use `collect_kv=True` during prefill causes
+  `TypeError: unexpected keyword argument`
 
 ### Fixed
 - `training/grpo.py` — fix `build_prompt()`: strip trailing EOS token from encoded

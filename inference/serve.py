@@ -120,10 +120,19 @@ class GenerateRequest(BaseModel):
     prompt: str
     max_tokens: int = Field(default=512, ge=1, le=4096)
     temperature: float = Field(default=0.8, ge=0.0, le=2.0)
+    # Voting: generate n_samples completions and pick the best one.
+    # "none" = single sample (default), "majority" = most common answer,
+    # "best_of_n" = highest-scoring completion by structural quality.
+    n_samples: int = Field(default=1, ge=1, le=32)
+    voting: str = Field(default="none", pattern=r"^(none|majority|best_of_n)$")
 
 
 class GenerateResponse(BaseModel):
     text: str
+    # When voting is enabled, include metadata about the voting process
+    n_samples: int = 1
+    n_valid: int = 0  # Number of completions that passed quality checks
+    voting: str = "none"
 
 
 # ---------------------------------------------------------------------------
@@ -142,15 +151,147 @@ def health():
 @app.post("/generate", response_model=GenerateResponse)
 def generate(req: GenerateRequest) -> GenerateResponse:
     """
-    Autoregressive text generation with optional temperature sampling.
+    Autoregressive text generation with optional temperature sampling and voting.
 
     temperature=0 → greedy argmax (deterministic, good for benchmarks).
     temperature>0 → divide logits by temperature then multinomial sample.
+
+    When n_samples > 1 and voting != "none":
+      - "majority": generate n_samples, extract the answer from each, return
+        the completion whose answer appears most frequently.
+      - "best_of_n": generate n_samples, score each by structural quality
+        (JSON validity, field completeness), return the highest-scoring one.
     """
     if _model is None:
         raise HTTPException(status_code=503, detail="Model not loaded")
-    text = _generate(req.prompt, req.max_tokens, req.temperature)
-    return GenerateResponse(text=text)
+
+    if req.n_samples == 1 or req.voting == "none":
+        text = _generate(req.prompt, req.max_tokens, req.temperature)
+        return GenerateResponse(text=text, n_samples=1, n_valid=1, voting="none")
+
+    # Generate n_samples completions
+    completions = [
+        _generate(req.prompt, req.max_tokens, req.temperature) for _ in range(req.n_samples)
+    ]
+
+    if req.voting == "majority":
+        text, n_valid = _majority_vote(completions)
+    elif req.voting == "best_of_n":
+        text, n_valid = _best_of_n(completions)
+    else:
+        text, n_valid = completions[0], len(completions)
+
+    return GenerateResponse(text=text, n_samples=req.n_samples, n_valid=n_valid, voting=req.voting)
+
+
+# ---------------------------------------------------------------------------
+# Voting strategies
+# ---------------------------------------------------------------------------
+
+
+def _extract_answer(text: str) -> str:
+    """Extract the answer portion of a completion (text after </think>)."""
+    idx = text.find("</think>")
+    if idx >= 0:
+        return text[idx + len("</think>") :].strip()
+    return text.strip()
+
+
+def _majority_vote(completions: list[str]) -> tuple[str, int]:
+    """
+    Pick the completion whose extracted answer appears most frequently.
+
+    Returns (best_completion, n_valid) where n_valid is the count of the
+    most common answer. Ties broken by first occurrence.
+    """
+    from collections import Counter
+
+    answers = [_extract_answer(c) for c in completions]
+    # Normalize: strip whitespace, collapse to first 200 chars for comparison
+    normalized = [a[:200].strip().lower() for a in answers]
+    counts = Counter(normalized)
+    most_common_answer = counts.most_common(1)[0][0]
+    n_valid = counts[most_common_answer]
+
+    # Return the first completion whose normalized answer matches
+    for comp, norm in zip(completions, normalized):
+        if norm == most_common_answer:
+            return comp, n_valid
+    return completions[0], 1
+
+
+def _best_of_n(completions: list[str]) -> tuple[str, int]:
+    """
+    Score each completion by structural quality and return the best one.
+
+    Scoring heuristics (higher is better):
+      +3: has </think> tag (proper format)
+      +2: text after </think> parses as valid JSON
+      +1 per required field: function, signature, behavior
+      +1: has constraints array
+      +1: has examples array
+
+    Returns (best_completion, n_valid) where n_valid is the number of
+    completions with score > 0.
+    """
+    import json
+
+    def score(text: str) -> int:
+        s = 0
+        idx = text.find("</think>")
+        if idx >= 0:
+            s += 3
+            after = text[idx + len("</think>") :].strip()
+        else:
+            after = text.strip()
+
+        # Try to find and parse JSON
+        brace_start = after.find("{")
+        if brace_start < 0:
+            return s
+
+        # Simple brace-matching extraction
+        depth = 0
+        in_str = False
+        esc = False
+        for i in range(brace_start, len(after)):
+            c = after[i]
+            if esc:
+                esc = False
+                continue
+            if c == "\\":
+                esc = True
+                continue
+            if c == '"':
+                in_str = not in_str
+                continue
+            if in_str:
+                continue
+            if c == "{":
+                depth += 1
+            elif c == "}":
+                depth -= 1
+                if depth == 0:
+                    try:
+                        parsed = json.loads(after[brace_start : i + 1])
+                        s += 2  # Valid JSON
+                        for field in ("function", "signature", "behavior"):
+                            if field in parsed:
+                                s += 1
+                        if isinstance(parsed.get("constraints"), list) and parsed["constraints"]:
+                            s += 1
+                        if isinstance(parsed.get("examples"), list) and parsed["examples"]:
+                            s += 1
+                    except (json.JSONDecodeError, ValueError):
+                        pass
+                    break
+
+        return s
+
+    scores = [score(c) for c in completions]
+    n_valid = sum(1 for s in scores if s > 0)
+    best_idx = max(range(len(scores)), key=lambda i: scores[i])
+    return completions[best_idx], n_valid
 
 
 # ---------------------------------------------------------------------------
@@ -200,6 +341,7 @@ def _generate(prompt: str, max_new_tokens: int, temperature: float) -> str:
         # Optionally compress the prefill KV caches immediately after generation
         if _compress_kv and kv_caches is not None:
             from model.kv_compress import compress_kv_caches
+
             kv_caches = compress_kv_caches(kv_caches)
 
         next_logits = logits[0, -1, :]  # (V,) — logits for the first new token

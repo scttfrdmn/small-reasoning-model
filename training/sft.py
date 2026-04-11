@@ -1249,15 +1249,19 @@ def _enable_gradient_checkpointing(model):
         orig = block.forward
 
         @functools.wraps(orig)
-        def cp_forward(x, attention_mask=None, kv_cache=None, position_offset=0, _orig=orig):
-            # During inference (kv_cache is not None), bypass checkpointing entirely.
-            # Recomputing the forward would re-run attention over stale/wrong states.
-            if kv_cache is not None:
+        def cp_forward(
+            x, attention_mask=None, kv_cache=None, position_offset=0, collect_kv=False, _orig=orig
+        ):
+            # During inference (kv_cache is not None) or KV collection (prefill),
+            # bypass checkpointing — recomputing would re-run attention over
+            # stale/wrong states, and collected KV tensors would be discarded.
+            if kv_cache is not None or collect_kv:
                 return _orig(
                     x,
                     attention_mask=attention_mask,
                     kv_cache=kv_cache,
                     position_offset=position_offset,
+                    collect_kv=collect_kv,
                 )
 
             # During training: wrap in a checkpoint lambda.

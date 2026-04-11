@@ -44,6 +44,8 @@ from grpo import (
     build_prompt,
     generate_completions,
     combined_reward,
+    normalize_answer,
+    _extract_final_answer,
     _enable_gradient_checkpointing,
 )
 
@@ -70,8 +72,10 @@ def load_eval_data(
         with open(train_path) as f:
             train_problems = {json.loads(line)["prompt"] for line in f if line.strip()}
         held_out = [p for p in all_problems if p["prompt"] not in train_problems]
-        print(f"Total problems: {len(all_problems)}, training: {len(train_problems)}, "
-              f"held-out: {len(held_out)}")
+        print(
+            f"Total problems: {len(all_problems)}, training: {len(train_problems)}, "
+            f"held-out: {len(held_out)}"
+        )
     else:
         held_out = all_problems
         print(f"Total problems: {len(all_problems)} (no train exclusion)")
@@ -107,6 +111,7 @@ def evaluate(
 
     total_correct_greedy = 0  # pass@1 (best completion per problem)
     total_correct_any = 0  # pass@8 (any completion correct)
+    total_correct_voted = 0  # majority vote: pick most common answer
     total_reward = 0.0
     total_completions = 0
     domain_stats = {}  # per-domain tracking
@@ -154,42 +159,68 @@ def evaluate(
         greedy_correct = rewards[0] >= 1.0  # First sample as proxy for greedy
         any_correct = n_correct > 0
 
+        # Majority voting: extract answers, pick the most common, check correctness
+        from collections import Counter
+
+        ground_truth = example.get("answer", example.get("expected_output", ""))
+        extracted_answers = [_extract_final_answer(c) for c in completions]
+        normalized_answers = [normalize_answer(a) if a else "" for a in extracted_answers]
+        non_empty = [a for a in normalized_answers if a]
+        if non_empty:
+            voted_answer = Counter(non_empty).most_common(1)[0][0]
+            voted_correct = voted_answer == normalize_answer(ground_truth)
+        else:
+            voted_correct = False
+
         total_correct_greedy += int(greedy_correct)
         total_correct_any += int(any_correct)
+        total_correct_voted += int(voted_correct)
         total_reward += mean_reward
         total_completions += len(completions)
 
         # Per-domain tracking
         if source not in domain_stats:
-            domain_stats[source] = {"correct_greedy": 0, "correct_any": 0, "total": 0, "reward_sum": 0.0}
+            domain_stats[source] = {
+                "correct_greedy": 0,
+                "correct_any": 0,
+                "correct_voted": 0,
+                "total": 0,
+                "reward_sum": 0.0,
+            }
         domain_stats[source]["correct_greedy"] += int(greedy_correct)
         domain_stats[source]["correct_any"] += int(any_correct)
+        domain_stats[source]["correct_voted"] += int(voted_correct)
         domain_stats[source]["total"] += 1
         domain_stats[source]["reward_sum"] += mean_reward
 
-        results["per_problem"].append({
-            "prompt": example["prompt"][:100] + "...",
-            "answer": example.get("answer", ""),
-            "source": source,
-            "domain": domain,
-            "n_correct": n_correct,
-            "rewards": rewards,
-            "best_reward": best_reward,
-            "sample_completion": completions[0][:200] + "..." if completions else "",
-        })
+        results["per_problem"].append(
+            {
+                "prompt": example["prompt"][:100] + "...",
+                "answer": example.get("answer", ""),
+                "source": source,
+                "domain": domain,
+                "n_correct": n_correct,
+                "rewards": rewards,
+                "best_reward": best_reward,
+                "sample_completion": completions[0][:200] + "..." if completions else "",
+            }
+        )
 
         # Progress logging
         if (i + 1) % 10 == 0 or i == 0:
             pass1_so_far = total_correct_greedy / (i + 1)
             pass8_so_far = total_correct_any / (i + 1)
-            print(f"  [{i+1}/{len(problems)}] pass@1={pass1_so_far:.3f} "
-                  f"pass@{group_size}={pass8_so_far:.3f} "
-                  f"reward={total_reward/(i+1):.3f} "
-                  f"this={n_correct}/{group_size}")
+            print(
+                f"  [{i+1}/{len(problems)}] pass@1={pass1_so_far:.3f} "
+                f"pass@{group_size}={pass8_so_far:.3f} "
+                f"reward={total_reward/(i+1):.3f} "
+                f"this={n_correct}/{group_size}"
+            )
 
     # Compute final metrics
     n = len(problems)
     results["pass_at_1"] = total_correct_greedy / n
+    results["pass_at_1_voted"] = total_correct_voted / n
     results["pass_at_k"] = total_correct_any / n
     results["mean_reward"] = total_reward / n
 
@@ -200,6 +231,7 @@ def evaluate(
         results["per_domain"][source] = {
             "n": t,
             "pass_at_1": stats["correct_greedy"] / t,
+            "pass_at_1_voted": stats["correct_voted"] / t,
             "pass_at_k": stats["correct_any"] / t,
             "mean_reward": stats["reward_sum"] / t,
         }
@@ -226,6 +258,7 @@ def main():
 
     # Load tokenizer
     from tokenizers import Tokenizer
+
     tokenizer = Tokenizer.from_file(os.path.join(args.tokenizer_path, "tokenizer.json"))
     print(f"Tokenizer: {args.tokenizer_path} (vocab={tokenizer.get_vocab_size()})")
 
@@ -252,7 +285,9 @@ def main():
     print(f"Parameters: {n_params:.1f}M on {device} ({dtype})")
 
     # Load eval data
-    problems = load_eval_data(args.eval_data, args.train_data, args.n_problems, args.seed, args.source)
+    problems = load_eval_data(
+        args.eval_data, args.train_data, args.n_problems, args.seed, args.source
+    )
     print(f"Evaluating on {len(problems)} held-out problems\n")
 
     # Run evaluation
@@ -290,16 +325,19 @@ def main():
     print(f"  Problems:   {results['n_problems']}")
     print(f"  Group size: {results['group_size']}")
     print(f"  Time:       {elapsed:.1f}s ({elapsed/len(problems):.1f}s/problem)")
-    print(f"\n  pass@1:     {results['pass_at_1']:.4f}")
-    print(f"  pass@{args.group_size}:     {results['pass_at_k']:.4f}")
-    print(f"  mean reward:{results['mean_reward']:.4f}")
+    print(f"\n  pass@1:        {results['pass_at_1']:.4f}")
+    print(f"  pass@1 voted:  {results['pass_at_1_voted']:.4f}")
+    print(f"  pass@{args.group_size}:        {results['pass_at_k']:.4f}")
+    print(f"  mean reward:   {results['mean_reward']:.4f}")
 
     print(f"\n  Per-domain breakdown:")
     for source, stats in results["per_domain"].items():
-        print(f"    {source:10s}  n={stats['n']:3d}  "
-              f"pass@1={stats['pass_at_1']:.3f}  "
-              f"pass@{args.group_size}={stats['pass_at_k']:.3f}  "
-              f"reward={stats['mean_reward']:.3f}")
+        print(
+            f"    {source:10s}  n={stats['n']:3d}  "
+            f"pass@1={stats['pass_at_1']:.3f}  "
+            f"pass@{args.group_size}={stats['pass_at_k']:.3f}  "
+            f"reward={stats['mean_reward']:.3f}"
+        )
 
     # Save results
     if args.output:
