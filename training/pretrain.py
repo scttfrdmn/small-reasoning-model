@@ -1242,7 +1242,12 @@ def _enable_gradient_checkpointing(model: SmallReasoningModel):
 
         @functools.wraps(original_forward)
         def checkpointed_forward(
-            x, attention_mask=None, kv_cache=None, position_offset=0, _orig=original_forward
+            x,
+            attention_mask=None,
+            kv_cache=None,
+            position_offset=0,
+            collect_kv=False,
+            _orig=original_forward,
         ):
             # torch.utils.checkpoint.checkpoint does not natively support
             # keyword arguments. We close over the kwargs in a nested function
@@ -1256,15 +1261,16 @@ def _enable_gradient_checkpointing(model: SmallReasoningModel):
                 )
                 return out  # Only return the activation tensor; kv is discarded
 
-            # If kv_cache is provided we're in inference mode: skip checkpointing.
-            # The checkpoint wrapper would drop the kv return value, breaking
-            # autoregressive generation which relies on the cached keys/values.
-            if kv_cache is not None:
+            # If kv_cache is provided (inference) or collect_kv is True (prefill),
+            # bypass checkpointing. The checkpoint wrapper drops the kv return
+            # value, which would break both incremental decoding and prefill.
+            if kv_cache is not None or collect_kv:
                 return _orig(
                     x,
                     attention_mask=attention_mask,
                     kv_cache=kv_cache,
                     position_offset=position_offset,
+                    collect_kv=collect_kv,
                 )
 
             # Run the block under checkpoint: activations are freed after

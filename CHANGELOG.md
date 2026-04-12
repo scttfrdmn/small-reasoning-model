@@ -8,6 +8,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [Unreleased]
 
 ### Added
+- `docs/mig-guidance.md` — practical reference for when researchers should
+  partition a GPU with MIG: 6 cases where it helps, 5 where it hurts, decision
+  heuristics, and MIG-capable GPU list including the RTX PRO 6000 Blackwell
+- Blog post 16: "When to Partition a GPU: MIG for Researchers" — mental model
+  for MIG (throughput per portfolio-hour, not time-to-finish-one-job), examples
+  tied to SRM workloads, and diagnostic questions for deciding when to partition
 - `eval/math_eval.py` — domain-specific math evaluation script that reuses the GRPO
   generation pipeline (`build_prompt`, `generate_completions`, `combined_reward`) to
   measure pass@1, pass@8, and mean reward on math problems; supports `--source` filter,
@@ -45,6 +51,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   parameter to `cp_forward` wrapper (same fix as `training/grpo.py`); without it,
   loading GRPO checkpoints that use `collect_kv=True` during prefill causes
   `TypeError: unexpected keyword argument`
+- `training/pretrain.py` — same `collect_kv` fix for `checkpointed_forward`
+  wrapper in `_enable_gradient_checkpointing()`; pretraining would fail with
+  `TypeError` on first forward pass
 
 ### Fixed
 - `training/grpo.py` — fix `build_prompt()`: strip trailing EOS token from encoded
