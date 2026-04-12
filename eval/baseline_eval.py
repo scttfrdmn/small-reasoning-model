@@ -51,8 +51,10 @@ from pathlib import Path
 
 import torch
 
-sys.path.insert(0, str(Path(__file__).parent.parent / "training"))
-sys.path.insert(0, str(Path(__file__).parent))
+_REPO_ROOT = Path(__file__).parent.parent
+sys.path.insert(0, str(_REPO_ROOT))
+sys.path.insert(0, str(_REPO_ROOT / "training"))
+sys.path.insert(0, str(_REPO_ROOT / "eval"))
 
 # Reuse SRM reward functions — the scoring must be identical to make
 # the comparison meaningful.
