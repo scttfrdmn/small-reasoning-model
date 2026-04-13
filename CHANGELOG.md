@@ -8,6 +8,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [Unreleased]
 
 ### Added
+- `docs/baseline-comparison.md` — reference tables for peer model comparison
+  (Qwen2.5-0.5B, Qwen2.5-Math-1.5B, TinyLlama-1.1B, Phi-1.5 vs SRM variants)
+  on the same math and SI eval suites
+- Blog post 17: "What Comparing to Baselines Told Us" — narrative interpretation
+  of the baseline results and implications for project direction: data
+  composition > volume, SI ceiling near 100% for competent small models,
+  specialization destroys generality (Qwen2.5-Math: 64% math, 0% SI), and
+  revised endpoint considerations for the project
 - `docs/mig-guidance.md` — practical reference for when researchers should
   partition a GPU with MIG: 6 cases where it helps, 5 where it hurts, decision
   heuristics, and MIG-capable GPU list including the RTX PRO 6000 Blackwell

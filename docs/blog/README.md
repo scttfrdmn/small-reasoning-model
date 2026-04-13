@@ -51,6 +51,7 @@ wrong about, and what broke before it worked.
 | 14 | [Five Bugs That Broke Generation (And What Each One Taught Us)](14-generation-debugging.md) | ✅ Written | SFT loss shift, disk exhaustion, EOS-terminated prompts, instruction format mismatch, KV prefill returning None, is_causal decode masking bug |
 | 15 | [What GRPO Actually Learned (And What It Didn't)](15-grpo-eval.md) | ✅ Written | GRPO eval results, stochastic vs consolidated knowledge, syntax vs semantics of reasoning, domain specialization, process reward models |
 | 16 | [When to Partition a GPU: MIG for Researchers](16-mig-partitioning.md) | ✅ Written | MIG mental model, RTX PRO 6000 Blackwell, parallel sweeps, multi-tenant workloads, throughput-per-hour vs time-to-finish |
+| 17 | [What Comparing to Baselines Told Us](17-baseline-comparison.md) | ✅ Written | Qwen2.5-0.5B vs TinyLlama vs Phi-1.5 vs Qwen2.5-Math vs SRM, data composition beats volume, SI ceiling, specialization trade-off, direction implications |
 
 ---
 
