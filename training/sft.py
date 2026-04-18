@@ -164,6 +164,10 @@ class SFTConfig:
     # Longer than pre-training to accommodate chain-of-thought sequences.
     # Sequences longer than this are truncated from the RIGHT (keeping answer).
     max_seq_len: int = 4096
+    # Optional cap on training examples. Useful when the dataset is large enough
+    # to cause OOM during loading (SFTDataset loads all examples into RAM).
+    # None means use all examples.
+    max_examples: Optional[int] = None
 
     # ── Training ──────────────────────────────────────────────────────────
     epochs: int = 2
@@ -912,7 +916,13 @@ def train(cfg: SFTConfig):
     # The synthetic path is only meant for --mode validate smoke tests.
     if Path(cfg.data_dir).exists() and any(Path(cfg.data_dir).iterdir()):
         print(f"\nLoading SFT data from: {cfg.data_dir}")
-        train_dataset = SFTDataset(cfg.data_dir, cfg.tokenizer_path, cfg.max_seq_len, "train")
+        train_dataset = SFTDataset(
+            cfg.data_dir,
+            cfg.tokenizer_path,
+            cfg.max_seq_len,
+            "train",
+            max_examples=cfg.max_examples,
+        )
         val_dataset = SFTDataset(cfg.data_dir, cfg.tokenizer_path, cfg.max_seq_len, "val")
     else:
         print(f"\nNo data found at {cfg.data_dir} — using synthetic data (validate mode)")
@@ -1429,6 +1439,12 @@ def main():
     parser.add_argument("--lr", type=float, default=2e-5)
     parser.add_argument("--backend", type=str, default="cuda", choices=["cuda", "neuron", "cpu"])
     parser.add_argument("--no_grad_ckpt", action="store_true")
+    parser.add_argument(
+        "--max_examples",
+        type=int,
+        default=None,
+        help="Cap training examples to avoid OOM on large datasets (None = use all)",
+    )
 
     args = parser.parse_args()
 
@@ -1453,6 +1469,7 @@ def main():
         lr=args.lr,
         grad_checkpointing=not args.no_grad_ckpt,
         backend=args.backend,
+        max_examples=args.max_examples,
     )
     train(cfg)
 

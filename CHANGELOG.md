@@ -8,6 +8,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [Unreleased]
 
 ### Added
+- `training/sft.py`: expose `--max_examples` CLI flag (wires through to
+  `SFTDataset.max_examples`) to cap training set size and avoid OOM on
+  large JSONL datasets that are loaded fully into RAM
 - `docs/baseline-comparison.md` — reference tables for peer model comparison
   (Qwen2.5-0.5B, Qwen2.5-Math-1.5B, TinyLlama-1.1B, Phi-1.5 vs SRM variants)
   on the same math and SI eval suites
