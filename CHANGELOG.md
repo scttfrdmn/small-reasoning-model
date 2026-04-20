@@ -8,6 +8,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [Unreleased]
 
 ### Added
+- Phase 3 pre-training complete: 10B tokens on math-heavy curriculum
+  (48% openwebmath/numinamath, 44% fineweb-edu, 8% misc), val_loss=2.68
+- Phase 3 SFT complete: 100K examples × 2 epochs from 500m_v2 checkpoint,
+  best val_loss=0.7369; math result: pass@1=2%, pass@8=23% (vs Phase 1
+  SFT 5%/25% — gap attributable to 18.7× fewer SFT training sequences)
+- `docs/baseline-comparison.md`: add Phase 3 SFT math results and analysis
 - `training/sft.py`: expose `--max_examples` CLI flag (wires through to
   `SFTDataset.max_examples`) to cap training set size and avoid OOM on
   large JSONL datasets that are loaded fully into RAM

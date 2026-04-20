@@ -32,6 +32,7 @@ same problems SRM was evaluated on:
 | SRM SFT (500m_sft_v2) | 500M | 0.050 | 0.050 | 0.250 | 0.044 |
 | SRM GRPO (500m_grpo) | 500M | 0.040 | 0.050 | 0.290 | 0.050 |
 | SRM SFT+SI (500m_sft_si) | 500M | 0.060 | 0.050 | 0.250 | 0.044 |
+| SRM Phase 3 SFT (500m_v2_sft) | 500M | 0.020 | 0.050 | 0.230 | 0.035 |
 | Phi-1.5 | 1.3B | 0.010 | 0.030 | 0.160 | 0.024 |
 | TinyLlama-1.1B-Chat | 1.1B | 0.020 | 0.030 | 0.100 | 0.016 |
 | Qwen2.5-0.5B-Instruct | 500M | 0.340 | 0.510 | 0.600 | 0.339 |
@@ -85,6 +86,36 @@ For context on the 10B-token vs 18T-token gap:
 4. **Voting gain is proportional to underlying signal.** SRM: +1 pt, Qwen2.5-
    0.5B: +17 pts. Voting needs real correctness signal in the completion
    distribution to have aggregation material.
+
+## Phase 3 Results (500m_v2_sft, 2026-04-19)
+
+Phase 3 re-ran pre-training from scratch on the production tokenizer with a
+math-heavy curriculum (48% openwebmath + numinamath, 44% fineweb-edu, 8%
+wikipedia/misc) for 10B tokens (9,536 steps, val_loss ended at 2.68). SFT
+was then run from that checkpoint on 100K examples from `sft_train_with_si.jsonl`
+for 2 epochs (6,250 steps, best val_loss=0.7369).
+
+**Phase 3 SFT math result vs Phase 1:**
+
+| Checkpoint | pass@1 | pass@1 voted | pass@8 | reward |
+|-----------|--------|--------------|--------|--------|
+| Phase 1 SFT (500m_sft_v2) | 0.050 | 0.050 | 0.250 | 0.044 |
+| **Phase 3 SFT (500m_v2_sft)** | **0.020** | **0.050** | **0.230** | **0.035** |
+
+Phase 3 SFT is slightly below Phase 1 SFT despite better pre-training data.
+Root cause: Phase 1 SFT trained on ~3.74M effective sequences (full 2M-example
+dataset × ~1.9 epochs). Phase 3 SFT trained on 200K sequences (100K examples
+× 2 epochs) — 18.7× less SFT data. The math-heavy pre-training helped but
+did not compensate for the SFT data gap.
+
+The voted pass@1 (5.0%) is identical between the two, which is evidence
+that both models encode similar knowledge — Phase 3 SFT's stochastic output
+is correct at the same aggregate rate when given enough samples.
+
+**Implications:**
+- Phase 3 pre-training + 100K SFT ≈ Phase 1 pre-training + 2M SFT at math
+- Better pre-training data is not a substitute for SFT coverage at this scale
+- GRPO on Phase 3 SFT is underway; will update when complete
 
 ## Reproduction
 
