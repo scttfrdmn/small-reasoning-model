@@ -44,6 +44,7 @@ same problems SRM was evaluated on:
 | Model | Size | JSON pass@1 | JSON pass@8 | Fields pass@1 | Fields pass@8 | Mean format | Mean fields |
 |-------|------|-------------|-------------|---------------|---------------|-------------|-------------|
 | SRM GRPO (no SI SFT) | 500M | 0.143 | 0.629 | 0.000 | 0.057 | 0.088 | 0.038 |
+| SRM Phase 3 GRPO (no SI SFT) | 500M | 0.029 | 0.143 | 0.000 | 0.000 | 0.014 | 0.000 |
 | SRM SFT+SI | 500M | 0.400 | 0.971 | 0.400 | 0.971 | 0.336 | 0.329 |
 | Phi-1.5 | 1.3B | 0.314 | 1.000 | 0.200 | 0.914 | 0.236 | 0.324 |
 | TinyLlama-1.1B | 1.1B | 0.600 | 1.000 | 0.486 | 0.971 | 0.359 | 0.557 |
@@ -162,6 +163,23 @@ grade-school arithmetic. The GRPO training set (grpo_filtered_v5.jsonl) is
 competition-math-heavy, which biases GRPO away from the arithmetic-chain style
 GSM8K requires.
 
+**SI regression (2026-04-20):** SI eval on Phase 3 GRPO best.pt shows a substantial
+regression vs Phase 1 GRPO (no SI SFT):
+
+| Checkpoint | JSON pass@1 | JSON pass@8 | Fields pass@1 | Fields pass@8 |
+|-----------|-------------|-------------|---------------|---------------|
+| Phase 1 GRPO (no SI SFT) | 0.143 | 0.629 | 0.000 | 0.057 |
+| Phase 3 GRPO (no SI SFT) | 0.029 | 0.143 | 0.000 | 0.000 |
+
+Phase 3 SFT was trained on `sft_train_with_si.jsonl` (which includes SI examples), but
+5,000 steps of math-focused GRPO subsequently degraded the JSON format behavior the SFT
+installed. The pattern is the same as the Qwen2.5-Math specialization finding: RL
+optimizing for math format overwrites the output distribution away from structured JSON.
+Only 2 of 7 task categories (validation, array) retain any JSON pass@8 signal.
+
+To restore SI capability on the Phase 3 base, a targeted SI SFT pass is needed on the
+Phase 3 checkpoint (either GRPO or SFT) — equivalent to what Phase 1 SFT+SI did.
+
 **Implications:**
 - Phase 3 GRPO cleared the blog-post-17 conservative estimate of 10-15% pass@1
   when measured by voting (11%), but not raw pass@1 (7%)
@@ -170,6 +188,8 @@ GSM8K requires.
 - The training data filter (grpo_filtered_v5.jsonl) was calibrated for Phase 1's
   capability; Phase 3's higher starting capability hits 75% skip rate, meaning
   most gradient signal comes from a small set of "goldilocks" problems
+- SI capability requires explicit SI SFT after GRPO; GRPO consistently overwrites
+  the JSON format distribution regardless of pre-training quality
 
 ## Reproduction
 

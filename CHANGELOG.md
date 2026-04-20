@@ -8,6 +8,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [Unreleased]
 
 ### Added
+- Phase 3 GRPO SI eval complete: JSON pass@8=14.3%, Fields pass@8=0.0%
+  (vs Phase 1 GRPO 62.9%/5.7%); math-focused GRPO degraded SI capability
+  installed by SFT; same pattern as Qwen2.5-Math specialization finding
+- `docs/baseline-comparison.md`: add Phase 3 GRPO SI results and regression
+  analysis to structured intent table and Phase 3 GRPO section
 - Phase 3 GRPO complete: 5,000 steps on Phase 3 SFT checkpoint
   (batch_prompts=2, group_size=8, max_gen_tokens=512, best_reward=0.5000,
   15,475 groups skipped — 75% skip rate); math eval: pass@1=7.0%,
