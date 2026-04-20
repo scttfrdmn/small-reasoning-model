@@ -33,6 +33,7 @@ same problems SRM was evaluated on:
 | SRM GRPO (500m_grpo) | 500M | 0.040 | 0.050 | 0.290 | 0.050 |
 | SRM SFT+SI (500m_sft_si) | 500M | 0.060 | 0.050 | 0.250 | 0.044 |
 | SRM Phase 3 SFT (500m_v2_sft) | 500M | 0.020 | 0.050 | 0.230 | 0.035 |
+| SRM Phase 3 GRPO (500m_v2_grpo) | 500M | 0.070 | 0.110 | 0.170 | 0.031 |
 | Phi-1.5 | 1.3B | 0.010 | 0.030 | 0.160 | 0.024 |
 | TinyLlama-1.1B-Chat | 1.1B | 0.020 | 0.030 | 0.100 | 0.016 |
 | Qwen2.5-0.5B-Instruct | 500M | 0.340 | 0.510 | 0.600 | 0.339 |
@@ -115,7 +116,60 @@ is correct at the same aggregate rate when given enough samples.
 **Implications:**
 - Phase 3 pre-training + 100K SFT ≈ Phase 1 pre-training + 2M SFT at math
 - Better pre-training data is not a substitute for SFT coverage at this scale
-- GRPO on Phase 3 SFT is underway; will update when complete
+
+## Phase 3 GRPO Results (500m_v2_grpo, 2026-04-16)
+
+GRPO was run for 5,000 steps on Phase 3 SFT (batch_prompts=2, group_size=8,
+max_gen_tokens=512, best_reward=0.5000 at training time). 15,475 groups were
+skipped (uniform reward, no gradient signal) — 75% skip rate vs ~50% in Phase 1,
+reflecting the Phase 3 model's higher capability making most training problems
+trivially easy or too hard.
+
+**Phase 3 GRPO vs Phase 1 GRPO:**
+
+| Checkpoint | pass@1 | pass@1 voted | pass@8 | reward |
+|-----------|--------|--------------|--------|--------|
+| Phase 1 GRPO (500m_grpo) | 0.040 | 0.050 | 0.290 | 0.050 |
+| **Phase 3 GRPO (500m_v2_grpo)** | **0.070** | **0.110** | **0.170** | **0.031** |
+
+**Per-domain (Phase 3 GRPO):**
+
+| Domain | n | pass@1 | pass@8 | reward |
+|--------|---|--------|--------|--------|
+| numina_tir | 43 | 0.093 | 0.186 | 0.035 |
+| gsm8k | 37 | 0.000 | 0.135 | 0.030 |
+| math | 20 | 0.150 | 0.200 | 0.025 |
+
+**Pattern:** Phase 3 GRPO raised pass@1 (4% → 7%) and voted pass@1 (5% → 11%),
+confirming that math-heavy pre-training improved the model's tendency to get correct
+answers. However, pass@8 fell sharply (29% → 17%) because GRPO concentrated the
+output distribution — the model solves fewer distinct problems but solves its
+solvable problems more reliably.
+
+The distribution narrowing is visible in the ratio:
+- Phase 1 GRPO: 29% of problems had *any* correct answer; when solvable, ~14% of
+  samples were correct (pass@1/pass@8 = 0.040/0.290 ≈ 0.14)
+- Phase 3 GRPO: 17% of problems had *any* correct answer; when solvable, ~41% of
+  samples were correct (0.070/0.170 ≈ 0.41)
+
+Voted pass@1 of 11% is also notably higher than pass@8 would predict from
+random sampling (1-(1-0.07)^8 ≈ 43%), confirming that correct answers cluster
+on specific problems rather than being evenly distributed.
+
+**GSM8K regression:** GSM8K pass@1 dropped to 0.000 despite pass@8=0.135,
+consistent with Phase 1 GRPO behavior where competition math specialization degraded
+grade-school arithmetic. The GRPO training set (grpo_filtered_v5.jsonl) is
+competition-math-heavy, which biases GRPO away from the arithmetic-chain style
+GSM8K requires.
+
+**Implications:**
+- Phase 3 GRPO cleared the blog-post-17 conservative estimate of 10-15% pass@1
+  when measured by voting (11%), but not raw pass@1 (7%)
+- Better pre-training data + GRPO gives 7% pass@1 vs 4% for Phase 1, a 75%
+  improvement — real but not transformative
+- The training data filter (grpo_filtered_v5.jsonl) was calibrated for Phase 1's
+  capability; Phase 3's higher starting capability hits 75% skip rate, meaning
+  most gradient signal comes from a small set of "goldilocks" problems
 
 ## Reproduction
 

@@ -8,6 +8,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [Unreleased]
 
 ### Added
+- Phase 3 GRPO complete: 5,000 steps on Phase 3 SFT checkpoint
+  (batch_prompts=2, group_size=8, max_gen_tokens=512, best_reward=0.5000,
+  15,475 groups skipped — 75% skip rate); math eval: pass@1=7.0%,
+  pass@1_voted=11.0%, pass@8=17.0% (vs Phase 1 GRPO 4%/5%/29%); GRPO
+  raised pass@1 via distribution concentration but reduced pass@8 diversity
+- `docs/baseline-comparison.md`: add Phase 3 GRPO results, per-domain
+  breakdown, and analysis of distribution narrowing and GSM8K regression
 - Phase 3 pre-training complete: 10B tokens on math-heavy curriculum
   (48% openwebmath/numinamath, 44% fineweb-edu, 8% misc), val_loss=2.68
 - Phase 3 SFT complete: 100K examples × 2 epochs from 500m_v2 checkpoint,
